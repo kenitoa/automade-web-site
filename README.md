@@ -12,6 +12,8 @@
 - 저장하기 전에 새 창에서 실제 사이트처럼 확인하기
 - 프로젝트 이름을 정해서 바탕화면에 실행 가능한 사이트 폴더로 저장하기
 
+<img width="1870" height="949" alt="image" src="https://github.com/user-attachments/assets/8bf7996c-29cf-4994-a943-a77dcd106413" />
+
 ## 실행 방법
 
 1. 이 폴더에서 `start-site.cmd` 파일을 더블 클릭합니다.
