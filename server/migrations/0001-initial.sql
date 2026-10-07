@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>=0),body TEXT NOT NULL CHECK(json_valid(body)),updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS project_backups(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,revision INTEGER NOT NULL,body TEXT NOT NULL CHECK(json_valid(body)),created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS backups_project ON project_backups(project_id,revision DESC);
+CREATE TABLE IF NOT EXISTS exports(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,directory TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('building','ready','failed')),created_at TEXT NOT NULL,error_code TEXT);
+CREATE INDEX IF NOT EXISTS exports_project ON exports(project_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS submissions(id TEXT PRIMARY KEY,block_id TEXT NOT NULL,idempotency_key TEXT NOT NULL,body TEXT NOT NULL CHECK(json_valid(body)),created_at TEXT NOT NULL,UNIQUE(block_id,idempotency_key));
+CREATE INDEX IF NOT EXISTS submissions_block ON submissions(block_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS table_data(block_id TEXT PRIMARY KEY,version INTEGER NOT NULL CHECK(version>=0),body TEXT NOT NULL CHECK(json_valid(body)));
+CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY,operation TEXT NOT NULL,resource_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL);

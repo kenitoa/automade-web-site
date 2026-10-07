@@ -1,24 +1,9 @@
 @echo off
 setlocal
-
 cd /d "%~dp0"
-
-if not exist "node_modules" (
-  echo Installing dependencies...
-  call npm install
-  if errorlevel 1 (
-    echo Failed to install dependencies.
-    pause
-    exit /b 1
-  )
-)
-
-echo Starting Interface Auto Builder...
-echo Browser will open automatically.
-call npm run dev -- --port 5173 --open
-
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bootstrap.ps1"
 if errorlevel 1 (
-  echo Failed to start the site.
+  echo Launch failed. Read the message above and try again.
   pause
   exit /b 1
 )

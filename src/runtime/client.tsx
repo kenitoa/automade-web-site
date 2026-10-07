@@ -1,0 +1,11 @@
+import { createRoot } from "react-dom/client";
+import SiteApp from "./SiteApp";
+import { parseProject, record } from "../domain/validation";
+import "./site.css";
+const element = document.getElementById("site-config");
+if (!element) throw new Error("사이트 설정이 없습니다.");
+const raw = record(JSON.parse(element.textContent ?? "null") as unknown);
+const project = parseProject(raw.project);
+const root = document.getElementById("root");
+if (!root) throw new Error("사이트 루트가 없습니다.");
+createRoot(root).render(<SiteApp project={project} mode="site" apiBase="/" />);
