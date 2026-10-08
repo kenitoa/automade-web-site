@@ -1,5 +1,5 @@
 import { uid } from "./catalog";
-import type { Block, Project } from "./types";
+import type { Action, Block, Project } from "./types";
 export function commit(
   project: Project,
   change: (draft: Project) => void,
@@ -40,6 +40,19 @@ export function deleteBlocks(project: Project, ids: string[]): Project {
             ? { kind: "none" }
             : i.action,
       }));
+      if (b.props.formSettings) {
+        const action = b.props.formSettings.successAction;
+        if (
+          (action.kind === "scroll" || action.kind === "modal") &&
+          removed.has(action.target)
+        )
+          b.props.formSettings.successAction = { kind: "none" };
+      }
+      if (
+        b.props.chartBinding &&
+        removed.has(b.props.chartBinding.tableBlockId)
+      )
+        delete b.props.chartBinding;
     }
   });
 }
@@ -81,6 +94,174 @@ export function duplicateBlocks(project: Project, ids: string[]): Project {
             ? { ...item.action, target: mapping.get(item.action.target)! }
             : item.action,
       }));
+      if (copy.props.formSettings)
+        copy.props.formSettings.successAction = remapAction(
+          copy.props.formSettings.successAction,
+          mapping,
+        );
+      if (
+        copy.props.chartBinding &&
+        mapping.has(copy.props.chartBinding.tableBlockId)
+      )
+        copy.props.chartBinding.tableBlockId = mapping.get(
+          copy.props.chartBinding.tableBlockId,
+        )!;
+      p.blocks.push(copy);
+    }
+  });
+}
+const remapAction = (action: Action, mapping: Map<string, string>): Action =>
+  (action.kind === "navigate" ||
+    action.kind === "modal" ||
+    action.kind === "scroll") &&
+  mapping.has(action.target)
+    ? { ...action, target: mapping.get(action.target)! }
+    : action;
+export function duplicatePage(project: Project, pageId: string): Project {
+  const page = project.pages.find((p) => p.id === pageId);
+  if (!page) throw new Error("복제할 페이지가 없습니다.");
+  const id = uid(),
+    originals = project.blocks.filter((b) => b.pageId === pageId);
+  const mapping = new Map([
+    [pageId, id],
+    ...originals.map((b): [string, string] => [b.id, uid()]),
+  ]);
+  let path = `${page.home ? "/page" : page.path}-copy`,
+    suffix = 2;
+  while (
+    project.pages.some((p) => p.path === path || p.aliases?.includes(path))
+  )
+    path = `${page.home ? "/page" : page.path}-copy-${suffix++}`;
+  return commit(project, (p) => {
+    p.pages.push({
+      ...structuredClone(page),
+      id,
+      title: `${page.title} 복사`,
+      path,
+      aliases: [],
+      home: false,
+    });
+    for (const b of originals) {
+      const copy = structuredClone(b);
+      copy.id = mapping.get(b.id)!;
+      copy.pageId = id;
+      copy.parentId = copy.parentId
+        ? (mapping.get(copy.parentId) ?? null)
+        : null;
+      copy.groupId = null;
+      copy.props.action = remapAction(copy.props.action, mapping);
+      copy.props.secondary = remapAction(copy.props.secondary, mapping);
+      copy.props.items = copy.props.items.map((i) => ({
+        ...i,
+        id: uid(),
+        action: remapAction(i.action, mapping),
+      }));
+      if (copy.props.formSettings)
+        copy.props.formSettings.successAction = remapAction(
+          copy.props.formSettings.successAction,
+          mapping,
+        );
+      if (
+        copy.props.chartBinding &&
+        mapping.has(copy.props.chartBinding.tableBlockId)
+      )
+        copy.props.chartBinding.tableBlockId = mapping.get(
+          copy.props.chartBinding.tableBlockId,
+        )!;
+      p.blocks.push(copy);
+    }
+  });
+}
+export function moveBlocks(
+  project: Project,
+  ids: string[],
+  pageId: string,
+): Project {
+  if (!project.pages.some((page) => page.id === pageId))
+    throw new Error("이동할 페이지가 없습니다.");
+  const chosen = new Set(ids);
+  for (let size = -1; size !== chosen.size;) {
+    size = chosen.size;
+    for (const b of project.blocks)
+      if (b.parentId && chosen.has(b.parentId)) chosen.add(b.id);
+  }
+  return commit(project, (p) => {
+    for (const b of p.blocks)
+      if (chosen.has(b.id)) {
+        b.pageId = pageId;
+        if (b.parentId && !chosen.has(b.parentId)) b.parentId = null;
+        b.groupId = null;
+      }
+  });
+}
+export function saveSection(
+  project: Project,
+  ids: string[],
+  name: string,
+): Project {
+  const chosen = new Set(ids);
+  for (let size = -1; size !== chosen.size;) {
+    size = chosen.size;
+    for (const b of project.blocks)
+      if (b.parentId && chosen.has(b.parentId)) chosen.add(b.id);
+  }
+  if (!name.trim() || !chosen.size)
+    throw new Error("선택한 블록과 섹션 이름이 필요합니다.");
+  return commit(project, (p) => {
+    p.extensions ??= {};
+    p.extensions.reusableSections ??= [];
+    const blocks = structuredClone(
+      project.blocks.filter((b) => chosen.has(b.id)),
+    );
+    for (const b of blocks)
+      if (b.parentId && !chosen.has(b.parentId)) b.parentId = null;
+    p.extensions.reusableSections.push({
+      id: uid(),
+      name: name.trim(),
+      blocks,
+    });
+  });
+}
+export function insertSection(
+  project: Project,
+  sectionId: string,
+  pageId: string,
+): Project {
+  const section = project.extensions?.reusableSections?.find(
+    (s) => s.id === sectionId,
+  );
+  if (!section || !project.pages.some((p) => p.id === pageId))
+    throw new Error("삽입할 섹션과 페이지를 확인하세요.");
+  const mapping = new Map(
+    section.blocks.map((b): [string, string] => [b.id, uid()]),
+  );
+  return commit(project, (p) => {
+    for (const b of section.blocks) {
+      const copy = structuredClone(b);
+      copy.id = mapping.get(b.id)!;
+      copy.pageId = pageId;
+      copy.parentId = b.parentId ? (mapping.get(b.parentId) ?? null) : null;
+      copy.groupId = null;
+      copy.layout.zIndex = p.blocks.length + 1;
+      copy.props.action = remapAction(copy.props.action, mapping);
+      copy.props.secondary = remapAction(copy.props.secondary, mapping);
+      copy.props.items = copy.props.items.map((i) => ({
+        ...i,
+        id: uid(),
+        action: remapAction(i.action, mapping),
+      }));
+      if (copy.props.formSettings)
+        copy.props.formSettings.successAction = remapAction(
+          copy.props.formSettings.successAction,
+          mapping,
+        );
+      if (
+        copy.props.chartBinding &&
+        mapping.has(copy.props.chartBinding.tableBlockId)
+      )
+        copy.props.chartBinding.tableBlockId = mapping.get(
+          copy.props.chartBinding.tableBlockId,
+        )!;
       p.blocks.push(copy);
     }
   });
@@ -113,6 +294,11 @@ export function deletePage(project: Project, pageId: string): Project {
             ? { kind: "none" }
             : i.action,
       }));
+      if (
+        b.props.formSettings?.successAction.kind === "navigate" &&
+        b.props.formSettings.successAction.target === pageId
+      )
+        b.props.formSettings.successAction = { kind: "none" };
     }
   });
 }

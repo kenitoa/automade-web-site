@@ -1,0 +1,8 @@
+CREATE TABLE work_items(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,kind TEXT NOT NULL,request_key TEXT NOT NULL,fingerprint TEXT NOT NULL,scope TEXT NOT NULL CHECK(json_valid(scope)),payload TEXT NOT NULL CHECK(json_valid(payload)),actor_id TEXT,status TEXT NOT NULL CHECK(status IN('waiting','running','succeeded','failed','cancelled','unknown')),recovery TEXT NOT NULL CHECK(recovery IN('retry','manual')),attempts INTEGER NOT NULL DEFAULT 0,max_attempts INTEGER NOT NULL CHECK(max_attempts BETWEEN 1 AND 10),next_at INTEGER NOT NULL,worker_id TEXT,lease_token TEXT,lease_until INTEGER NOT NULL DEFAULT 0,cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN(0,1)),result TEXT CHECK(result IS NULL OR json_valid(result)),error_code TEXT,created_at INTEGER NOT NULL,started_at INTEGER,finished_at INTEGER,UNIQUE(organization_id,kind,request_key));
+CREATE INDEX work_ready ON work_items(status,next_at,created_at);
+CREATE INDEX work_organization ON work_items(organization_id,status,created_at);
+CREATE TABLE work_organization_limits(organization_id TEXT PRIMARY KEY,max_running INTEGER NOT NULL CHECK(max_running BETWEEN 1 AND 16),max_waiting INTEGER NOT NULL CHECK(max_waiting BETWEEN 1 AND 1000),last_claimed_at INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE resource_leases(resource TEXT NOT NULL,token TEXT PRIMARY KEY,mode TEXT NOT NULL CHECK(mode IN('shared','exclusive')),owner TEXT NOT NULL,expires_at INTEGER NOT NULL);
+CREATE INDEX resource_active ON resource_leases(resource,expires_at);
+CREATE TABLE studio_owner_sessions(token_hash TEXT PRIMARY KEY,csrf TEXT NOT NULL,expires_at INTEGER NOT NULL);
+

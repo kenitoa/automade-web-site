@@ -16,6 +16,7 @@ import {
 } from "../domain/commands";
 import SiteApp from "../runtime/SiteApp";
 import type { StudioState } from "./useStudio";
+import { trackStudioEvent } from "../infrastructure/telemetry";
 export default function Workspace({
   studio: s,
   onTemplates,
@@ -31,6 +32,20 @@ export default function Workspace({
       [],
     ),
     [draft, setDraft] = useState<Project | null>(null);
+  const [inline, setInline] = useState<{
+      id: string;
+      key: "title" | "body";
+      value: string;
+    } | null>(null),
+    [dropTarget, setDropTarget] = useState("");
+  const finishInline = () => {
+    if (!inline) return;
+    s.apply((p) => {
+      const b = p.blocks.find((x) => x.id === inline.id);
+      if (b) b.props[inline.key] = inline.value;
+    });
+    setInline(null);
+  };
   const paper = useRef<HTMLDivElement>(null),
     draftRef = useRef<Project | null>(null),
     drag = useRef<{
@@ -40,7 +55,8 @@ export default function Workspace({
       resize: boolean;
       ids: string[];
     } | null>(null);
-  const select = (b: Block, shift = false) =>
+  const select = (b: Block, shift = false) => {
+    s.setInspectorOpen(true);
     s.setSelected((current) =>
       shift
         ? current.includes(b.id)
@@ -50,12 +66,14 @@ export default function Workspace({
           ? p.blocks.filter((x) => x.groupId === b.groupId).map((x) => x.id)
           : [b.id],
     );
+  };
   const start = (
     event: PointerEvent<HTMLElement>,
     b: Block,
     resize = false,
   ) => {
     if (
+      inline?.id === b.id ||
       s.testMode ||
       b.locked ||
       b.layout.mode !== "absolute" ||
@@ -166,8 +184,19 @@ export default function Workspace({
   const decorate = (b: Block, node: ReactNode) => (
     <div
       key={b.id}
-      className={`edit-block ${s.selected.includes(b.id) ? "selected" : ""}`}
+      className={`edit-block ${p.blocks.length>100&&b.layout.mode==="flow"&&!s.selected.includes(b.id)?"deferred-block":""} ${s.selected.includes(b.id) ? "selected" : ""} ${dropTarget === b.id ? "drop-target" : ""}`}
       data-edit-id={b.id}
+      tabIndex={0}
+      role="group"
+      aria-label={`${b.name} 편집 블록`}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          select(b, event.shiftKey);
+          s.setInspectorOpen(true);
+        }
+      }}
       style={
         b.layout.mode === "absolute"
           ? {
@@ -184,8 +213,13 @@ export default function Workspace({
       onDragStart={(e) =>
         e.dataTransfer.setData("application/x-automade-move", b.id)
       }
-      onDragOver={(e) => e.preventDefault()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!b.locked) setDropTarget(b.id);
+      }}
+      onDragLeave={() => setDropTarget("")}
       onDrop={(event) => {
+        setDropTarget("");
         const id = event.dataTransfer.getData("application/x-automade-move");
         if (id && id !== b.id) {
           event.stopPropagation();
@@ -203,10 +237,19 @@ export default function Workspace({
         }
       }}
       onClickCapture={(event) => {
+        if (inline?.id === b.id) return;
         event.preventDefault();
         event.stopPropagation();
         if (!s.selected.includes(b.id) || event.shiftKey)
           select(b, event.shiftKey);
+      }}
+      onDoubleClick={(event) => {
+        if (b.locked || !["hero", "text", "footer"].includes(b.type)) return;
+        event.stopPropagation();
+        const target = event.target as HTMLElement;
+        const key = target.closest("h1,h2,h3") ? "title" : "body";
+        setInline({ id: b.id, key, value: b.props[key] });
+        select(b);
       }}
       onPointerDown={(event) => start(event, b)}
       onPointerMove={move}
@@ -214,11 +257,40 @@ export default function Workspace({
       onPointerCancel={cancel}
     >
       {node}
+      {inline?.id === b.id ? (
+        <div
+          className="inline-text-editor"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <label>
+            {inline.key === "title" ? "제목" : "본문"} 바로 편집
+            <textarea
+              autoFocus
+              value={inline.value}
+              onChange={(e) => setInline({ ...inline, value: e.target.value })}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Escape") setInline(null);
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter")
+                  finishInline();
+              }}
+            />
+          </label>
+          <button type="button" onClick={finishInline}>
+            텍스트 적용
+          </button>
+          <button type="button" onClick={() => setInline(null)}>
+            취소
+          </button>
+        </div>
+      ) : null}
       {s.selected.includes(b.id) ? (
         <>
           <span className="selection-label">
             {b.name}
             {b.locked ? " · 잠김" : ""}
+            {` · ${b.layout.mode === "flow" ? "흐름" : `${Math.round(b.layout.width)}×${Math.round(b.layout.height)}`}`}
           </span>
           {b.layout.mode === "absolute" && !b.locked && viewport > 640 ? (
             <button
@@ -292,6 +364,8 @@ export default function Workspace({
               onClick={() => {
                 cancel();
                 setViewport(Number(width));
+                if (Number(width) === 390)
+                  void trackStudioEvent(p.id, "preview.mobile");
               }}
             >
               {label}

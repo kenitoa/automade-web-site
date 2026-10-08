@@ -2,16 +2,61 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
   useState,
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type { Action, Block, Project, Row, SiteConfig } from "../domain/types";
-import { csv, parseRows, record, validateForm } from "../domain/validation";
+import type {
+  Action,
+  Block,
+  Project,
+  Row,
+  SiteConfig,
+  RichParagraph,
+  SiteLanguage,
+  TableColumn,
+  Item,
+} from "../domain/types";
+import {
+  csv,
+  parseProject,
+  parseRows,
+  record,
+  validateForm,
+} from "../domain/validation";
 import { uid } from "../domain/catalog";
+import {
+  effectiveDesign,
+  findContent,
+  getChartData,
+  importTableCsv,
+  validateTableRows,
+  visibleColumns,
+} from "../domain/content";
 import { locale } from "./locale";
+import { languageLabel } from "../domain/languages";
+import { projectBlockDefinition } from "../domain/blockRegistry";
+import PlatformWidgets from "./PlatformWidgets";
+import { useBoundContent } from "./useBoundContent";
+import { assetSource } from "../domain/assets";
+import {
+  alternateLinks,
+  isMemberContentPath,
+  pageImageUrl,
+  pageMetadata,
+  pageStructuredData,
+} from "../domain/seo";
+import {
+  localizeProject,
+  localizedPath,
+  parseLocalizedPath,
+  siteLanguages,
+} from "../domain/localization";
 export interface SiteProps extends SiteConfig {
   pageId?: string;
+  contentPath?: string;
+  language?: SiteLanguage;
   onPageChange?: (id: string) => void;
   decorate?: (block: Block, node: ReactNode) => ReactNode;
 }
@@ -22,6 +67,8 @@ interface RuntimeContext {
   pageId: string;
   activeBlock: string | null;
   execute: (action: Action) => void;
+  navigateContent: (path: string) => void;
+  contentHref: (path: string) => string;
   openModal: string | null;
   setOpenModal: (id: string | null) => void;
 }
@@ -31,31 +78,119 @@ const fonts = {
   mono: "ui-monospace, monospace",
 };
 export default function SiteApp({
-  project,
+  project: sourceProject,
   mode,
   apiBase,
   pageId: controlledPage,
+  contentPath: initialContentPath,
+  language: initialLanguage,
   onPageChange,
   decorate,
 }: SiteProps) {
+  const [language, setLanguage] = useState<SiteLanguage>(
+    initialLanguage ?? sourceProject.settings.language,
+  );
+  const [memberSource, setMemberSource] = useState<Project | null>(null),
+    [memberError, setMemberError] = useState("");
+  const activeSource = memberSource ?? sourceProject;
+  const project = useMemo(
+    () => localizeProject(activeSource, language),
+    [activeSource, language],
+  );
+  useEffect(() => {
+    if (mode !== "site") return;
+    let alive = true;
+    let memberRequest = 0;
+    const refreshMember = async (account: unknown) => {
+      const ticket = ++memberRequest;
+      if (!account) {
+        setMemberSource(null);
+        setMemberError("");
+        return;
+      }
+      try {
+        const value = await runtimeRequest(
+          `${apiBase}api/platform/member-project`,
+          "GET",
+        );
+        if (alive && ticket === memberRequest) {
+          setMemberSource(parseProject(value));
+          setMemberError("");
+        }
+      } catch (error) {
+        if (alive && ticket === memberRequest) {
+          setMemberSource(null);
+          setMemberError(
+            error instanceof Error
+              ? error.message
+              : "회원 콘텐츠를 조회하지 못했습니다.",
+          );
+        }
+      }
+    };
+    const changed = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          account?: unknown;
+          authenticated?: boolean;
+          csrf?: string;
+        }>
+      ).detail;
+      if (detail.csrf) platformCsrf = detail.csrf;
+      if (detail.authenticated === false) {
+        memberRequest++;
+        setMemberSource(null);
+        return;
+      }
+      if ("account" in detail) void refreshMember(detail.account);
+    };
+    window.addEventListener("site-capabilities", changed);
+    window.addEventListener("site-session-changed", changed);
+    return () => {
+      alive = false;
+      window.removeEventListener("site-capabilities", changed);
+      window.removeEventListener("site-session-changed", changed);
+    };
+  }, [mode, apiBase]);
+  const [contentRoute, setContentRoute] = useState(initialContentPath ?? "");
   const [pageId, setPageId] = useState(
     project.pages.find((p) => p.home)?.id ?? project.pages[0]!.id,
   );
   const [activeBlock, setActiveBlock] = useState<string | null>(null);
   const [openModal, setOpenModal] = useState<string | null>(null);
   useEffect(() => {
-    if (controlledPage) return;
+    if (controlledPage || mode !== "site") return;
     const sync = () => {
-      const path =
-        location.hash.slice(1) || location.pathname.replace(/\/$/, "") || "/";
-      const page = project.pages.find((p) => p.path === path && p.published);
-      setPageId(page?.id ?? "__missing");
+      const route = parseLocalizedPath(
+        activeSource,
+        location.hash.startsWith("#/")
+          ? location.hash.slice(1)
+          : location.pathname,
+      );
+      const path = route.path;
+      setLanguage(route.language);
+      const page = activeSource.pages.find(
+        (p) => (p.path === path || p.aliases?.includes(path)) && p.published,
+      );
+      const content = findContent(activeSource, path);
+      const memberContent = isMemberContentPath(activeSource, path);
+      setContentRoute(content || memberContent ? path : "");
+      setPageId(
+        page?.id ??
+          (content || memberContent
+            ? activeSource.pages.find((p) => p.home)!.id
+            : "__missing"),
+      );
       setActiveBlock(null);
     };
     sync();
     window.addEventListener("hashchange", sync);
-    return () => window.removeEventListener("hashchange", sync);
-  }, [project.pages, controlledPage]);
+    window.addEventListener("popstate", sync);
+    return () => {
+      window.removeEventListener("hashchange", sync);
+      window.removeEventListener("popstate", sync);
+    };
+  }, [activeSource, controlledPage, mode]);
   const execute = useCallback(
     (action: Action) => {
       if (action.kind === "navigate") {
@@ -63,17 +198,44 @@ export default function SiteApp({
           (p) => p.id === action.target && p.published,
         );
         if (page) {
+          setContentRoute("");
           setPageId(page.id);
           onPageChange?.(page.id);
           setActiveBlock(null);
-          if (!controlledPage) location.hash = page.path;
+          if (!controlledPage && mode === "site")
+            history.pushState(
+              null,
+              "",
+              localizedPath(activeSource, page.path, language),
+            );
         }
       } else if (action.kind === "scroll") {
+        const target = project.blocks.find((b) => b.id === action.target);
+        if (target && target.pageId !== "*") {
+          const page = project.pages.find(
+            (p) => p.id === target.pageId && p.published,
+          );
+          if (page) {
+            setPageId(page.id);
+            onPageChange?.(page.id);
+            if (!controlledPage && mode === "site")
+              history.pushState(
+                null,
+                "",
+                localizedPath(activeSource, page.path, language),
+              );
+          }
+        }
+        setContentRoute("");
         setActiveBlock(null);
         requestAnimationFrame(() =>
-          document
-            .getElementById(`block-${action.target}`)
-            ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+          document.getElementById(`block-${action.target}`)?.scrollIntoView({
+            behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+              .matches
+              ? "auto"
+              : "smooth",
+            block: "start",
+          }),
         );
       } else if (action.kind === "modal") setOpenModal(action.target);
       else if (action.kind === "link") {
@@ -82,9 +244,80 @@ export default function SiteApp({
         else location.href = action.url;
       }
     },
-    [project.pages, controlledPage, onPageChange],
+    [project, activeSource, language, mode, controlledPage, onPageChange],
   );
   const currentPage = controlledPage ?? pageId;
+  const selectedContent = contentRoute
+    ? findContent(project, contentRoute)
+    : undefined;
+  const memberLocked =
+    mode === "site" &&
+    (project.pages.find((p) => p.id === currentPage)?.access === "members" ||
+      isMemberContentPath(project, contentRoute)) &&
+    !memberSource;
+  useEffect(() => {
+    if (mode !== "site") return;
+    const meta = pageMetadata(
+      activeSource,
+      currentPage,
+      contentRoute,
+      language,
+    );
+    document.title = meta.title;
+    const description = document.querySelector<HTMLMetaElement>(
+      'meta[name="description"]',
+    );
+    if (description) description.content = meta.description;
+    const setMeta = (selector: string, content: string) => {
+      const element = document.querySelector<HTMLMetaElement>(selector);
+      if (element) element.content = content;
+    };
+    setMeta('meta[property="og:title"]', meta.title);
+    setMeta('meta[property="og:description"]', meta.description);
+    setMeta('meta[property="og:url"]', meta.canonical);
+    const imageUrl = pageImageUrl(activeSource, meta);
+    let imageMeta = document.querySelector<HTMLMetaElement>(
+      'meta[property="og:image"]',
+    );
+    if (imageUrl) {
+      if (!imageMeta) {
+        imageMeta = document.createElement("meta");
+        imageMeta.setAttribute("property", "og:image");
+        document.head.append(imageMeta);
+      }
+      imageMeta.content = imageUrl;
+    } else imageMeta?.remove();
+    const structured = document.querySelector<HTMLScriptElement>(
+      'script[type="application/ld+json"]',
+    );
+    if (structured)
+      structured.textContent = JSON.stringify(
+        pageStructuredData(activeSource, meta, language),
+      );
+    setMeta(
+      'meta[name="robots"]',
+      meta.noIndex ? "noindex,follow" : "index,follow",
+    );
+    const canonical = document.querySelector<HTMLLinkElement>(
+      'link[rel="canonical"]',
+    );
+    if (canonical) canonical.href = meta.canonical;
+    document
+      .querySelectorAll('link[rel="alternate"][hreflang]')
+      .forEach((link) => link.remove());
+    for (const alternate of alternateLinks(
+      activeSource,
+      currentPage,
+      contentRoute,
+    )) {
+      const link = document.createElement("link");
+      link.rel = "alternate";
+      link.hreflang = alternate.language;
+      link.href = alternate.href;
+      document.head.append(link);
+    }
+    document.documentElement.lang = language;
+  }, [activeSource, currentPage, contentRoute, language, mode]);
   const context: RuntimeContext = {
     project,
     mode,
@@ -92,6 +325,31 @@ export default function SiteApp({
     pageId: currentPage,
     activeBlock,
     execute,
+    navigateContent: (path) => {
+      if (
+        mode === "site" &&
+        !findContent(project, path) &&
+        project.collections?.some(
+          (collection) =>
+            collection.queryMode === "server" &&
+            path.startsWith(`${collection.path}/`),
+        )
+      ) {
+        location.assign(localizedPath(activeSource, path, language));
+        return;
+      }
+      setContentRoute(path);
+      const home = project.pages.find((p) => p.home)!;
+      setPageId(home.id);
+      onPageChange?.(home.id);
+      if (!controlledPage && mode === "site")
+        history.pushState(
+          null,
+          "",
+          localizedPath(activeSource, path, language),
+        );
+    },
+    contentHref: (path) => localizedPath(activeSource, path, language),
     openModal,
     setOpenModal,
   };
@@ -124,7 +382,14 @@ export default function SiteApp({
     "--brand": project.theme.brandColor,
     "--accent": project.theme.accentColor,
     "--surface": project.theme.surfaceColor,
-    "--site-width": `${project.canvas.width}px`,
+    "--site-width": `${project.theme.typography?.contentWidth ?? project.canvas.width}px`,
+    "--section-gap": `${project.theme.typography?.sectionGap ?? (project.theme.density === "compact" ? 12 : project.theme.density === "spacious" ? 40 : 24)}px`,
+    "--body-size": `${project.theme.typography?.bodySize ?? 16}px`,
+    "--heading-size": `${project.theme.typography?.headingSize ?? 48}px`,
+    "--line-height": project.theme.typography?.lineHeight ?? 1.65,
+    "--button-radius": `${project.theme.button?.radius ?? 9}px`,
+    "--button-padding": `${project.theme.button?.padding ?? 10}px`,
+    "--theme-radius": `${project.theme.radius}px`,
     background: project.canvas.background,
     fontFamily: fonts[project.theme.font],
   } as CSSProperties;
@@ -137,6 +402,37 @@ export default function SiteApp({
       <a className="site-skip" href="#site-content">
         {locale(project, "콘텐츠로 이동")}
       </a>
+      {siteLanguages(activeSource).length > 1 ? (
+        <div className="site-language" aria-label="언어 선택">
+          {siteLanguages(activeSource).map((lang) => (
+            <button
+              type="button"
+              key={lang}
+              aria-pressed={lang === language}
+              className={lang === language ? "active" : "secondary"}
+              onClick={() => {
+                setLanguage(lang);
+                if (!controlledPage && mode === "site")
+                  history.pushState(
+                    null,
+                    "",
+                    localizedPath(
+                      activeSource,
+                      contentRoute ||
+                        activeSource.pages.find(
+                          (page) => page.id === currentPage,
+                        )?.path ||
+                        "/",
+                      lang,
+                    ),
+                  );
+              }}
+            >
+              {languageLabel(lang)}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <main
         id="site-content"
         className="site-content"
@@ -149,12 +445,63 @@ export default function SiteApp({
         {!project.pages.some((p) => p.id === currentPage) ? (
           <section className="site-not-found">
             <h1>{locale(project, "페이지를 찾을 수 없습니다.")}</h1>
-            <a href="#/">{locale(project, "홈으로 이동")}</a>
+            <a href={context.contentHref("/")}>
+              {locale(project, "홈으로 이동")}
+            </a>
           </section>
+        ) : memberLocked ? (
+          <section className="site-block">
+            <h1>회원 전용 페이지</h1>
+            <p>
+              로그인하면 콘텐츠를 볼 수 있습니다. 아래 회원 로그인 메뉴를
+              사용하세요.
+            </p>
+            {memberError ? (
+              <p className="site-error" role="alert">
+                {memberError}
+              </p>
+            ) : null}
+          </section>
+        ) : selectedContent ? (
+          <>
+            {" "}
+            {visible.filter((b) => b.type === "navigation").map(render)}
+            <article className="site-block site-content-detail">
+              <h1>{selectedContent.record.title}</h1>
+              {selectedContent.record.imageId &&
+              project.assets.find(
+                (a) => a.id === selectedContent.record.imageId,
+              ) ? (
+                <img
+                  src={assetSource(
+                    project.assets.find(
+                      (a) => a.id === selectedContent.record.imageId,
+                    ),
+                    apiBase,
+                    mode,
+                  )}
+                  alt={
+                    project.assets.find(
+                      (a) => a.id === selectedContent.record.imageId,
+                    )!.alt
+                  }
+                />
+              ) : null}
+              <p className="site-copy">{selectedContent.record.body}</p>
+              {selectedContent.record.category ? (
+                <p className="site-muted">{selectedContent.record.category}</p>
+              ) : null}
+              <a href={context.contentHref("/")}>
+                {locale(project, "홈으로 이동")}
+              </a>
+            </article>
+            {visible.filter((b) => b.type === "footer").map(render)}
+          </>
         ) : (
           visible.map(render)
         )}
       </main>
+      <PlatformWidgets projectId={project.id} apiBase={apiBase} mode={mode} />
     </div>
   );
 }
@@ -169,14 +516,33 @@ function BlockView({
   render: (b: Block) => ReactNode;
   selectBlock: (id: string | null) => void;
 }) {
+  const design = effectiveDesign(c.project, b);
+  const bound = useBoundContent(c.project, b, c.mode, c.apiBase);
+  const items = bound.items;
   const style = {
-    background: b.design.background,
-    color: b.design.color,
-    borderColor: b.design.borderColor,
-    borderRadius: b.design.radius,
-    padding: b.design.padding,
-    boxShadow: b.design.shadow ? "0 12px 32px #14213d14" : "none",
+    background: design.background,
+    color: design.color,
+    borderColor: design.borderColor,
+    borderRadius: design.radius,
+    padding: design.padding,
+    boxShadow: design.shadow ? "0 12px 32px #14213d14" : "none",
     gap: b.layout.gap,
+    "--block-padding": `${design.padding}px`,
+    "--block-font": `${design.fontSize ?? c.project.theme.typography?.bodySize ?? 16}px`,
+    "--block-heading": `${design.headingSize ?? c.project.theme.typography?.headingSize ?? (b.type === "hero" ? 48 : 32)}px`,
+    "--block-line":
+      design.lineHeight ?? c.project.theme.typography?.lineHeight ?? 1.65,
+    "--block-gap": `${b.layout.gap}px`,
+    ...Object.fromEntries(
+      (["tablet", "mobile"] as const).flatMap((device) =>
+        Object.entries(b.layout.responsive?.[device] ?? {}).map(
+          ([key, value]) => [
+            `--${device}-${key}`,
+            key === "columns" ? value : `${value}px`,
+          ],
+        ),
+      ),
+    ),
     "--cols": b.layout.columns,
     "--mobile-cols": b.layout.mobileColumns,
     minHeight: b.layout.minHeight || undefined,
@@ -197,15 +563,41 @@ function BlockView({
           ? "right"
           : "center",
   } as CSSProperties;
-  const Heading = b.type === "hero" ? "h1" : "h2";
+  const level = b.props.headingLevel ?? (b.type === "hero" ? 1 : 2);
+  const definition = projectBlockDefinition(c.project, b);
+  const renderer = definition?.rendererKey ?? b.type;
+  const Heading = level === 1 ? "h1" : level === 3 ? "h3" : "h2";
   const heading = (
     <>
       {b.props.title ? <Heading>{b.props.title}</Heading> : null}
-      {b.props.body ? <p className="site-copy">{b.props.body}</p> : null}
+      {b.props.richText?.length ? (
+        <RichText paragraphs={b.props.richText} />
+      ) : b.props.body ? (
+        <p className="site-copy">{b.props.body}</p>
+      ) : null}
     </>
   );
   let content: ReactNode;
-  if (b.type === "navigation" || b.type === "sidebar")
+  if (renderer === "automade:timeline")
+    content = (
+      <>
+        {heading}
+        <ol className="site-timeline">
+          {items.map((item) => (
+            <li key={item.id}>
+              <h3>{item.title}</h3>
+              <p className="site-copy">{item.body}</p>
+              {item.action.kind !== "none" ? (
+                <button type="button" onClick={() => c.execute(item.action)}>
+                  {locale(c.project, "확인")}
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      </>
+    );
+  else if (renderer === "navigation" || renderer === "sidebar")
     content = <Navigation block={b} context={c} selectBlock={selectBlock} />;
   else if (b.type === "form")
     content = (
@@ -225,14 +617,26 @@ function BlockView({
     content = (
       <>
         {heading}
-        <ChartBlock block={b} context={c} />
+        <ChartBlock
+          block={b}
+          context={c}
+          connected={
+            b.props.dataBinding
+              ? (bound.points ?? {
+                  values: [],
+                  labels: [],
+                  unit: b.props.chartBinding?.unit ?? "",
+                })
+              : bound.points
+          }
+        />
       </>
     );
   else if (b.type === "tabs")
     content = (
       <>
         {heading}
-        <TabsBlock block={b} context={c} />
+        <TabsBlock block={b} context={c} items={items} />
       </>
     );
   else if (b.type === "modal")
@@ -251,18 +655,31 @@ function BlockView({
     content = (
       <figure>
         {asset ? (
-          <img loading="lazy" src={asset.data} alt={b.props.alt || asset.alt} />
+          <img
+            loading="lazy"
+            src={assetSource(asset, c.apiBase, c.mode)}
+            alt={
+              b.props.imageSettings?.decorative ? "" : b.props.alt || asset.alt
+            }
+            width={asset.width || undefined}
+            height={asset.height || undefined}
+            style={{
+              objectFit: b.props.imageSettings?.fit ?? "cover",
+              objectPosition: `${b.props.imageSettings?.focalX ?? 50}% ${b.props.imageSettings?.focalY ?? 50}%`,
+              aspectRatio: b.props.imageSettings?.ratio || undefined,
+            }}
+          />
         ) : (
           <div className="site-empty">이미지를 연결하세요.</div>
         )}
         {b.props.title ? <figcaption>{b.props.title}</figcaption> : null}
       </figure>
     );
-  } else if (b.type === "faq")
+  } else if (renderer === "faq")
     content = (
       <>
         {heading}
-        {b.props.items.map((i) => (
+        {items.map((i) => (
           <details key={i.id}>
             <summary>{i.title}</summary>
             <p className="site-copy">{i.body}</p>
@@ -275,17 +692,21 @@ function BlockView({
         ))}
       </>
     );
-  else if (b.type === "cards" || b.type === "pricing")
+  else if (renderer === "cards" || renderer === "pricing")
     content = (
       <>
         {heading}
         <div className="site-grid">
-          {b.props.items.map((i) => (
+          {items.map((i) => (
             <article key={i.id} className="site-card">
               {i.imageId && c.project.assets.find((a) => a.id === i.imageId) ? (
                 <img
                   loading="lazy"
-                  src={c.project.assets.find((a) => a.id === i.imageId)!.data}
+                  src={assetSource(
+                    c.project.assets.find((a) => a.id === i.imageId),
+                    c.apiBase,
+                    c.mode,
+                  )}
                   alt={c.project.assets.find((a) => a.id === i.imageId)!.alt}
                 />
               ) : null}
@@ -294,6 +715,25 @@ function BlockView({
                 <strong className="site-price">{i.price}</strong>
               ) : null}
               <p className="site-copy">{i.body}</p>
+              {i.detailPath ? (
+                <a
+                  href={c.contentHref(i.detailPath)}
+                  onClick={(event) => {
+                    if (
+                      event.ctrlKey ||
+                      event.metaKey ||
+                      event.shiftKey ||
+                      event.altKey ||
+                      event.button !== 0
+                    )
+                      return;
+                    event.preventDefault();
+                    c.navigateContent(i.detailPath!);
+                  }}
+                >
+                  {locale(c.project, "자세히 보기")}
+                </a>
+              ) : null}
               {i.action.kind !== "none" ? (
                 <button onClick={() => c.execute(i.action)} type="button">
                   자세히 보기
@@ -329,10 +769,57 @@ function BlockView({
       id={`block-${b.id}`}
       data-block-id={b.id}
       data-layout={b.layout.mode}
-      className={`site-block block-${b.type} ${b.layout.mobileHidden ? "hide-mobile" : ""} ${b.layout.tabletHidden ? "hide-tablet" : ""} ${b.layout.desktopHidden ? "hide-desktop" : ""}`}
+      className={`site-block animation-${b.design.animation ?? "none"} block-${b.type} ${b.layout.mobileHidden ? "hide-mobile" : ""} ${b.layout.tabletHidden ? "hide-tablet" : ""} ${b.layout.desktopHidden ? "hide-desktop" : ""}`}
       style={style}
     >
       {content}
+      {bound.enabled ? (
+        <div className="site-bound-controls" aria-label="연결 콘텐츠 조회">
+          {bound.fetchedAt ? (
+            <p className="site-muted">
+              조회 시각{" "}
+              <time dateTime={bound.fetchedAt}>{bound.fetchedAt}</time>
+              {bound.cached ? " · 저장된 조회 결과" : ""}
+            </p>
+          ) : null}
+          <label>
+            콘텐츠 검색
+            <input
+              type="search"
+              value={bound.query}
+              onChange={(event) => bound.setQuery(event.target.value)}
+            />
+          </label>
+          {bound.loading ? (
+            <p role="status">데이터를 불러오는 중…</p>
+          ) : bound.error ? (
+            <p role="alert" className="site-error">
+              {bound.error}
+              <button type="button" onClick={bound.reload}>
+                다시 조회
+              </button>
+            </p>
+          ) : !items.length ? (
+            <p className="site-empty">표시할 데이터가 없습니다.</p>
+          ) : null}
+          <button
+            type="button"
+            className="secondary"
+            disabled={!bound.hasPrevious || bound.loading}
+            onClick={bound.previous}
+          >
+            이전 항목
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!bound.hasNext || bound.loading}
+            onClick={bound.next}
+          >
+            다음 항목
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -394,7 +881,7 @@ function Navigation({
             target: x.id,
           }))
       : c.project.pages
-          .filter((p) => p.published)
+          .filter((p) => p.published && p.navigation !== false)
           .map((p) => ({ id: p.id, label: p.title, target: p.id }));
   return (
     <>
@@ -413,7 +900,8 @@ function Navigation({
         aria-label={b.props.title || "사이트 메뉴"}
         className={`site-navigation ${expanded ? "expanded" : ""}`}
       >
-        {b.props.menuMode === "blocks" ? (
+        {b.props.menuMode === "blocks" &&
+        b.props.navigationBehavior !== "scroll" ? (
           <button
             className="secondary"
             type="button"
@@ -433,8 +921,11 @@ function Navigation({
             type="button"
             key={i.id}
             onClick={() => {
-              if (b.props.menuMode === "blocks") selectBlock(i.target);
-              else c.execute({ kind: "navigate", target: i.target });
+              if (b.props.menuMode === "blocks") {
+                if (b.props.navigationBehavior === "scroll")
+                  c.execute({ kind: "scroll", target: i.target });
+                else selectBlock(i.target);
+              } else c.execute({ kind: "navigate", target: i.target });
               setExpanded(false);
             }}
             aria-current={i.id === c.pageId ? "page" : undefined}
@@ -446,6 +937,15 @@ function Navigation({
     </>
   );
 }
+let platformCsrf = "";
+class RuntimeError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+  }
+}
 async function runtimeRequest(
   path: string,
   method: string,
@@ -453,16 +953,22 @@ async function runtimeRequest(
 ): Promise<unknown> {
   const response = await fetch(path, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(platformCsrf && method !== "GET"
+        ? { "X-Platform-CSRF": platformCsrf }
+        : {}),
+    },
     ...(body ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(15000),
   });
   const json = record(await response.json());
   if (!response.ok || json.error)
-    throw new Error(
+    throw new RuntimeError(
       String(
         record(json.error).message || "저장에 실패했습니다. 다시 시도하세요.",
       ),
+      String(record(json.error).code ?? "REQUEST_FAILED"),
     );
   return json.data;
 }
@@ -494,7 +1000,9 @@ function FormBlock({
                   : ""
                 : String(fd.get(f.id) ?? "")),
         );
-        const result = validateForm(b.props.fields, raw);
+        if (b.props.formSettings?.consentRequired)
+          raw.__consent = fd.has("__consent") ? "true" : "";
+        const result = validateForm(b.props.fields, raw, b.props.formSettings);
         setErrors(result.errors);
         if (Object.keys(result.errors).length) {
           setStatus(locale(c.project, "입력값을 확인하세요."));
@@ -512,6 +1020,11 @@ function FormBlock({
               "미리보기 제출을 확인했습니다. 데이터는 저장되지 않습니다.",
             ),
           );
+          if (
+            b.props.formSettings &&
+            b.props.formSettings.successAction.kind !== "none"
+          )
+            c.execute(b.props.formSettings.successAction);
           return;
         }
         if (b.props.dataSource !== "local") {
@@ -526,8 +1039,16 @@ function FormBlock({
             idempotencyKey: key.current,
           });
           key.current = uid();
-          setStatus(locale(c.project, "문의가 저장되었습니다."));
+          setStatus(
+            b.props.formSettings?.successMessage ||
+              locale(c.project, "문의가 저장되었습니다."),
+          );
           form.reset();
+          if (
+            b.props.formSettings &&
+            b.props.formSettings.successAction.kind !== "none"
+          )
+            c.execute(b.props.formSettings.successAction);
         } catch (error) {
           setStatus(error instanceof Error ? error.message : "제출 실패");
         } finally {
@@ -596,6 +1117,11 @@ function FormBlock({
               }
             />
           )}{" "}
+          {f.description ? (
+            <span className="site-muted" id={`${b.id}-${f.id}-description`}>
+              {f.description}
+            </span>
+          ) : null}
           {errors[f.id] ? (
             <span id={`${b.id}-${f.id}-error`} className="site-error">
               {errors[f.id]}
@@ -603,6 +1129,31 @@ function FormBlock({
           ) : null}
         </label>
       ))}
+      {b.props.formSettings?.privacyNotice ? (
+        <p className="site-copy site-muted">
+          {b.props.formSettings.privacyNotice}
+        </p>
+      ) : null}
+      {b.props.formSettings?.consentRequired ? (
+        <label className="site-field site-checkbox">
+          <input
+            name="__consent"
+            type="checkbox"
+            required
+            disabled={busy}
+            aria-invalid={Boolean(errors.__consent)}
+            aria-describedby={
+              errors.__consent ? `${b.id}-consent-error` : undefined
+            }
+          />
+          <span>개인정보 안내를 확인하고 동의합니다. *</span>
+          {errors.__consent ? (
+            <span className="site-error" id={`${b.id}-consent-error`}>
+              {errors.__consent}
+            </span>
+          ) : null}
+        </label>
+      ) : null}
       <div className="site-actions">
         <button type="submit" disabled={busy}>
           {busy
@@ -634,8 +1185,114 @@ function TableBlock({
     [page, setPage] = useState(0),
     [status, setStatus] = useState(""),
     [busy, setBusy] = useState(false),
-    [editing, setEditing] = useState<Row | null>(null);
+    [editing, setEditing] = useState<Row | null>(null),
+    [importSource, setImportSource] = useState(""),
+    [importMapping, setImportMapping] = useState<Record<string, number>>({}),
+    [conflict, setConflict] = useState<{ mine: Row[]; latest: Row[] } | null>(
+      null,
+    ),
+    [tableHistory, setTableHistory] = useState<{
+      items: {
+        version: number;
+        rows: Row[];
+        previousRows: Row[];
+        actorId: string;
+        createdAt: string;
+      }[];
+      nextCursor: number | null;
+    } | null>(null),
+    [historyBusy, setHistoryBusy] = useState(false);
+  const columns = visibleColumns(b.props.columns);
+  const importPreview = useMemo(() => {
+    if (!importSource) return null;
+    try {
+      return {
+        result: importTableCsv(
+          importSource,
+          b.props.columns,
+          Object.keys(importMapping).length ? importMapping : undefined,
+          rows,
+        ),
+        error: "",
+      };
+    } catch (error) {
+      return {
+        result: null,
+        error: error instanceof Error ? error.message : "CSV 읽기 실패",
+      };
+    }
+  }, [importSource, importMapping, b.props.columns, rows]);
+  const [canManage, setCanManage] = useState(c.mode === "preview");
+  useEffect(() => {
+    if (!canManage) {
+      setTableHistory(null);
+      setEditing(null);
+      setConflict(null);
+      setImportSource("");
+    }
+  }, [canManage]);
+  useEffect(() => {
+    if (c.mode === "preview") {
+      setCanManage(true);
+      return;
+    }
+    let active = true;
+    runtimeRequest(
+      `${c.apiBase}api/platform/capabilities?projectId=${encodeURIComponent(c.project.id)}`,
+      "GET",
+    )
+      .then((data) => {
+        if (active) setCanManage(record(data).canManage === true);
+      })
+      .catch(() => {
+        if (active) setCanManage(false);
+      });
+    const changed = (event: Event) =>
+      setCanManage(
+        (event as CustomEvent<{ canManage: boolean }>).detail.canManage ===
+          true,
+      );
+    window.addEventListener("site-capabilities", changed);
+    return () => {
+      active = false;
+      window.removeEventListener("site-capabilities", changed);
+    };
+  }, [c.mode, c.apiBase, c.project.id]);
   const sequence = useRef(0);
+  const loadHistory = async (cursor?: number) => {
+    if (!canManage || c.mode !== "site" || historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const result = record(
+        await runtimeRequest(
+          `${c.apiBase}api/tables/${b.id}/history?limit=10${cursor === undefined ? "" : `&beforeVersion=${cursor}`}`,
+          "GET",
+        ),
+      );
+      if (!Array.isArray(result.items))
+        throw new Error("변경 이력 형식을 확인하지 못했습니다.");
+      const items = result.items.map((value: unknown) => {
+        const row = record(value);
+        return {
+          version: Number(row.version),
+          rows: parseRows(row.rows, b.props.columns.length),
+          previousRows: parseRows(row.previousRows, b.props.columns.length),
+          actorId: String(row.actorId),
+          createdAt: String(row.createdAt),
+        };
+      });
+      setTableHistory((previous) => ({
+        items:
+          cursor === undefined ? items : [...(previous?.items ?? []), ...items],
+        nextCursor:
+          typeof result.nextCursor === "number" ? result.nextCursor : null,
+      }));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "변경 이력 조회 실패");
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
   useEffect(() => {
     setRows(b.props.rows);
     setVersion(0);
@@ -673,6 +1330,17 @@ function TableBlock({
     c.mode,
   ]);
   const save = async (next: Row[]) => {
+    if (!canManage) {
+      setStatus("표 수정은 관리 권한이 필요합니다.");
+      return;
+    }
+    const ruleErrors = validateTableRows(b.props.columns, next, rows);
+    if (ruleErrors.length) {
+      setStatus(
+        ruleErrors.map((e) => `행 ${e.row + 1}: ${e.message}`).join(" "),
+      );
+      return;
+    }
     setBusy(true);
     try {
       if (c.mode === "site") {
@@ -687,13 +1355,38 @@ function TableBlock({
         setVersion(Number(result.version));
       }
       setRows(next);
+      setConflict(null);
       setEditing(null);
+      window.dispatchEvent(
+        new CustomEvent("site-table-updated", {
+          detail: { blockId: b.id, rows: next },
+        }),
+      );
       setStatus(
         c.mode === "preview"
           ? "미리보기 데이터만 변경했습니다."
           : "변경 사항을 저장했습니다.",
       );
     } catch (error) {
+      if (
+        error instanceof RuntimeError &&
+        ["CONFLICT", "TABLE_CONFLICT", "REVISION_CONFLICT"].includes(error.code)
+      ) {
+        try {
+          const latest = record(
+            await runtimeRequest(`${c.apiBase}api/tables/${b.id}`, "GET"),
+          );
+          const fresh = parseRows(latest.rows, b.props.columns.length);
+          setConflict({ mine: next, latest: fresh });
+          setVersion(Number(latest.version));
+          setRows(fresh);
+        } catch {
+          setStatus(
+            "최신 데이터를 조회하지 못했습니다. 내 편집 내용은 유지됩니다.",
+          );
+          return;
+        }
+      }
       setStatus(error instanceof Error ? error.message : "저장 실패");
     } finally {
       setBusy(false);
@@ -701,8 +1394,10 @@ function TableBlock({
   };
   const sorted = rows
     .filter((row) =>
-      row.values.some((v) =>
-        v.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
+      columns.some(({ index }) =>
+        (row.values[index] ?? "")
+          .toLocaleLowerCase()
+          .includes(query.toLocaleLowerCase()),
       ),
     )
     .sort((a, d) => {
@@ -721,8 +1416,8 @@ function TableBlock({
   const currentPage = Math.min(page, pageCount - 1);
   const download = () => {
     const contents = csv(
-      b.props.columns.map((x) => x.label),
-      sorted.map((x) => x.values),
+      columns.map(({ column }) => column.label),
+      sorted.map((x) => columns.map(({ index }) => x.values[index] ?? "")),
     );
     const url = URL.createObjectURL(
       new Blob([contents], { type: "text/csv;charset=utf-8" }),
@@ -749,17 +1444,155 @@ function TableBlock({
         </label>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !canManage}
           onClick={() =>
             setEditing({ id: uid(), values: b.props.columns.map(() => "") })
           }
         >
           {b.props.primaryAction || locale(c.project, "행 추가")}
         </button>
+        <label className="site-import-label">
+          CSV 가져오기
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            disabled={busy || !canManage}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              if (file.size > 8_000_000) {
+                setStatus("CSV 파일은 8MB 이하여야 합니다.");
+                return;
+              }
+              setImportMapping({});
+              setImportSource(await file.text());
+              event.target.value = "";
+            }}
+          />
+        </label>
         <button className="secondary" type="button" onClick={download}>
           {b.props.secondaryAction || locale(c.project, "CSV 다운로드")}
         </button>
+        {canManage && c.mode === "site" ? (
+          <button
+            type="button"
+            className="secondary"
+            disabled={historyBusy}
+            onClick={() => {
+              if (tableHistory) setTableHistory(null);
+              else void loadHistory();
+            }}
+          >
+            {historyBusy
+              ? "이력 조회 중…"
+              : tableHistory
+                ? "변경 이력 닫기"
+                : "변경 이력"}
+          </button>
+        ) : null}
       </div>
+      {!canManage ? (
+        <p className="site-muted">표 변경은 관리 계정으로 로그인해야 합니다.</p>
+      ) : null}
+      {conflict ? (
+        <section className="site-row-editor" aria-label="충돌 비교">
+          <h3>내 수정과 최신 데이터 비교</h3>
+          <p>
+            최신 데이터를 불러왔습니다. 비교한 뒤 내 수정 적용 여부를
+            선택하세요.
+          </p>
+          <div className="site-grid">
+            <div>
+              <h4>내 수정</h4>
+              <TableSnapshot columns={b.props.columns} rows={conflict.mine} />
+            </div>
+            <div>
+              <h4>최신 데이터</h4>
+              <TableSnapshot columns={b.props.columns} rows={conflict.latest} />
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void save(conflict.mine)}
+          >
+            내 수정 적용
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setConflict(null);
+              setEditing(null);
+            }}
+          >
+            최신 데이터 유지
+          </button>
+        </section>
+      ) : null}
+      {importPreview ? (
+        <section className="site-row-editor" aria-label="CSV 가져오기 확인">
+          <h3>가져오기 전 열 연결과 오류 확인</h3>
+          {b.props.columns.map((col, index) => (
+            <label key={col.id}>
+              {col.label}
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={(importMapping[col.id] ?? index) + 1}
+                onChange={(e) =>
+                  setImportMapping({
+                    ...Object.fromEntries(
+                      b.props.columns.map((column, i) => [column.id, i]),
+                    ),
+                    ...importMapping,
+                    [col.id]: Number(e.target.value) - 1,
+                  })
+                }
+              />
+            </label>
+          ))}
+          <p>
+            {importPreview.error ||
+              `${importPreview.result?.rows.length ?? 0}행 / ${importPreview.result?.errors.length ?? 0}개 오류`}
+          </p>
+          {importPreview.result?.errors.slice(0, 20).map((e, i) => (
+            <p key={i} className="site-error">
+              행 {e.row + 1}: {e.message}
+            </p>
+          ))}
+          {importPreview.result ? (
+            <TableSnapshot
+              columns={b.props.columns}
+              rows={importPreview.result.rows.slice(0, 3)}
+            />
+          ) : null}
+          <button
+            type="button"
+            disabled={
+              busy ||
+              !importPreview.result ||
+              Boolean(importPreview.result.errors.length)
+            }
+            onClick={() => {
+              if (importPreview.result) {
+                void save([...rows, ...importPreview.result.rows]);
+                setImportSource("");
+              }
+            }}
+          >
+            검토한 데이터 추가
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setImportSource("")}
+          >
+            취소
+          </button>
+        </section>
+      ) : null}
       {editing ? (
         <form
           className="site-row-editor"
@@ -768,11 +1601,14 @@ function TableBlock({
             void save([...rows.filter((x) => x.id !== editing.id), editing]);
           }}
         >
-          {b.props.columns.map((col, i) => (
+          {columns.map(({ column: col, index: i }) => (
             <label key={col.id}>
               {col.label}
               <input
-                required
+                required={col.required !== false}
+                readOnly={Boolean(
+                  col.readOnly && rows.some((r) => r.id === editing.id),
+                )}
                 type={
                   col.type === "number"
                     ? "number"
@@ -805,13 +1641,67 @@ function TableBlock({
           </button>
         </form>
       ) : null}
+      {tableHistory ? (
+        <section className="site-row-editor" aria-label="표 변경 이력">
+          <h3>표 변경 이력</h3>
+          {!tableHistory.items.length ? (
+            <p className="site-empty">저장된 변경 이력이 없습니다.</p>
+          ) : (
+            tableHistory.items.map((entry) => (
+              <details key={entry.version}>
+                <summary>
+                  버전 {entry.version} ·{" "}
+                  {new Date(entry.createdAt).toLocaleString()} ·{" "}
+                  {entry.previousRows.length}행 → {entry.rows.length}행
+                </summary>
+                <p>
+                  수정자:{" "}
+                  {entry.actorId === "local-owner"
+                    ? "로컬 운영자"
+                    : entry.actorId.slice(0, 8)}
+                </p>
+                <div className="site-grid">
+                  <div>
+                    <h4>변경 전</h4>
+                    <TableSnapshot
+                      columns={b.props.columns}
+                      rows={entry.previousRows.slice(0, 20)}
+                    />
+                  </div>
+                  <div>
+                    <h4>변경 후</h4>
+                    <TableSnapshot
+                      columns={b.props.columns}
+                      rows={entry.rows.slice(0, 20)}
+                    />
+                  </div>
+                </div>
+                {Math.max(entry.rows.length, entry.previousRows.length) > 20 ? (
+                  <p>처음 20행을 표시합니다.</p>
+                ) : null}
+              </details>
+            ))
+          )}
+          {tableHistory.nextCursor !== null ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={historyBusy}
+              onClick={() => void loadHistory(tableHistory.nextCursor!)}
+            >
+              이전 이력 더 보기
+            </button>
+          ) : null}
+        </section>
+      ) : null}
       <div className="site-table-wrap">
         <table>
           <thead>
             <tr>
-              {b.props.columns.map((col, i) => (
+              {columns.map(({ column: col, index: i }) => (
                 <th
                   key={col.id}
+                  style={{ width: col.width }}
                   aria-sort={
                     sort.index === i
                       ? sort.direction === 1
@@ -843,14 +1733,14 @@ function TableBlock({
               .slice(currentPage * 10, currentPage * 10 + 10)
               .map((row) => (
                 <tr key={row.id}>
-                  {row.values.map((v, i) => (
-                    <td key={i}>{v}</td>
+                  {columns.map(({ column, index }) => (
+                    <td key={column.id}>{row.values[index]}</td>
                   ))}
                   <td>
                     <button
                       type="button"
+                      disabled={busy || !canManage}
                       className="secondary"
-                      disabled={busy}
                       onClick={() => setEditing(structuredClone(row))}
                     >
                       수정
@@ -858,7 +1748,7 @@ function TableBlock({
                     <button
                       type="button"
                       className="danger"
-                      disabled={busy}
+                      disabled={busy || !canManage}
                       onClick={() => {
                         if (
                           window.confirm(
@@ -908,16 +1798,94 @@ function TableBlock({
     </>
   );
 }
+function TableSnapshot({
+  columns,
+  rows,
+}: {
+  columns: TableColumn[];
+  rows: Row[];
+}) {
+  const shown = visibleColumns(columns);
+  return (
+    <div className="site-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {shown.map(({ column }) => (
+              <th key={column.id}>{column.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              {shown.map(({ column, index }) => (
+                <td key={column.id}>{row.values[index]}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!rows.length ? (
+        <p className="site-empty">표시할 데이터가 없습니다.</p>
+      ) : null}
+    </div>
+  );
+}
 function ChartBlock({
   block: b,
   context: c,
+  connected,
 }: {
   block: Block;
   context: RuntimeContext;
+  connected?: { values: number[]; labels: string[]; unit: string };
 }) {
   const [mode, setMode] = useState(b.props.chartType),
     [selected, setSelected] = useState<number | null>(null);
-  const values = b.props.series;
+  const [tableRows, setTableRows] = useState<Row[] | undefined>(undefined),
+    [loadError, setLoadError] = useState("");
+  const binding = b.props.chartBinding;
+  useEffect(() => {
+    let active = true;
+    setTableRows(undefined);
+    setLoadError("");
+    const table = c.project.blocks.find(
+      (block) => block.id === binding?.tableBlockId && block.type === "table",
+    );
+    if (table && c.mode === "site" && table.props.dataSource === "local")
+      runtimeRequest(`${c.apiBase}api/tables/${table.id}`, "GET")
+        .then((value) => {
+          if (active)
+            setTableRows(
+              parseRows(record(value).rows, table.props.columns.length),
+            );
+        })
+        .catch((error) => {
+          if (active)
+            setLoadError(
+              error instanceof Error ? error.message : "표 데이터 조회 실패",
+            );
+        });
+    const updated = (event: Event) => {
+      const detail = (event as CustomEvent<{ blockId: string; rows: Row[] }>)
+        .detail;
+      if (detail.blockId === binding?.tableBlockId) setTableRows(detail.rows);
+    };
+    window.addEventListener("site-table-updated", updated);
+    return () => {
+      active = false;
+      window.removeEventListener("site-table-updated", updated);
+    };
+  }, [binding?.tableBlockId, c.apiBase, c.mode, c.project.blocks]);
+  const { values, labels, unit } =
+    connected ?? getChartData(c.project, b, tableRows);
+  if (loadError)
+    return (
+      <p role="alert" className="site-error">
+        {loadError}
+      </p>
+    );
   if (!values.length)
     return <p className="site-empty">차트 데이터가 없습니다.</p>;
   const min = Math.min(0, ...values),
@@ -931,6 +1899,14 @@ function ChartBlock({
     .join(" ");
   return (
     <>
+      {binding ? (
+        <p className="site-muted">
+          표 데이터 · {binding.xLabel} / {binding.yLabel}
+          {unit ? ` (${unit})` : ""}
+        </p>
+      ) : (
+        <p className="site-muted">수동 입력 데이터</p>
+      )}
       <div className="site-actions">
         {(["bar", "line", "summary"] as const).map((m) => (
           <button
@@ -970,7 +1946,7 @@ function ChartBlock({
           className="site-chart"
           viewBox="0 0 600 220"
           role="img"
-          aria-label={`${b.props.title}: ${values.join(", ")}`}
+          aria-label={`${b.props.title}: ${values.map((v, i) => `${labels[i] ?? i + 1} ${v}${unit}`).join(", ")}`}
         >
           <line
             x1="30"
@@ -1014,7 +1990,7 @@ function ChartBlock({
                   <circle cx={x} cy={y} r="5" fill="var(--brand)" />
                 )}
                 <text x={x} y="208" textAnchor="middle" fontSize="12">
-                  {value}
+                  {labels[i] || value}
                 </text>
               </g>
             );
@@ -1032,18 +2008,20 @@ function ChartBlock({
 function TabsBlock({
   block: b,
   context: c,
+  items,
 }: {
   block: Block;
   context: RuntimeContext;
+  items: Item[];
 }) {
   const [active, setActive] = useState(0);
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
-  const item =
-    b.props.items[Math.min(active, Math.max(0, b.props.items.length - 1))];
+  const activeIndex = Math.min(active, Math.max(0, items.length - 1)),
+    item = items[activeIndex];
   return (
     <>
       <div className="site-tabs" role="tablist" aria-label={b.props.title}>
-        {b.props.items.map((i, index) => (
+        {items.map((i, index) => (
           <button
             id={`${b.id}-tab-${i.id}`}
             key={i.id}
@@ -1052,20 +2030,18 @@ function TabsBlock({
             }}
             type="button"
             role="tab"
-            aria-selected={index === active}
+            aria-selected={index === activeIndex}
             aria-controls={`${b.id}-panel-${i.id}`}
-            tabIndex={index === active ? 0 : -1}
-            className={index === active ? "active" : "secondary"}
+            tabIndex={index === activeIndex ? 0 : -1}
+            className={index === activeIndex ? "active" : "secondary"}
             onClick={() => setActive(index)}
             onKeyDown={(event) => {
               let next: number;
-              if (event.key === "ArrowRight")
-                next = (index + 1) % b.props.items.length;
+              if (event.key === "ArrowRight") next = (index + 1) % items.length;
               else if (event.key === "ArrowLeft")
-                next =
-                  (index - 1 + b.props.items.length) % b.props.items.length;
+                next = (index - 1 + items.length) % items.length;
               else if (event.key === "Home") next = 0;
-              else if (event.key === "End") next = b.props.items.length - 1;
+              else if (event.key === "End") next = items.length - 1;
               else return;
               event.preventDefault();
               setActive(next);
@@ -1142,4 +2118,47 @@ function Modal({
       </div>
     </dialog>
   );
+}
+
+function RichText({ paragraphs }: { paragraphs: RichParagraph[] }) {
+  const nodes: ReactNode[] = [];
+  for (let i = 0; i < paragraphs.length;) {
+    const p = paragraphs[i]!;
+    const spans = (paragraph: RichParagraph) =>
+      paragraph.spans.map((span, j) => {
+        let node: ReactNode = span.text;
+        if (span.bold) node = <strong>{node}</strong>;
+        if (span.italic) node = <em>{node}</em>;
+        if (span.href)
+          node = (
+            <a href={span.href} rel="noopener noreferrer">
+              {node}
+            </a>
+          );
+        return <span key={j}>{node}</span>;
+      });
+    if (p.kind === "paragraph") {
+      nodes.push(
+        <p className="site-copy" key={i}>
+          {spans(p)}
+        </p>,
+      );
+      i++;
+    } else {
+      const start = i,
+        children: ReactNode[] = [];
+      while (i < paragraphs.length && paragraphs[i]!.kind === p.kind) {
+        children.push(<li key={i}>{spans(paragraphs[i]!)}</li>);
+        i++;
+      }
+      nodes.push(
+        p.kind === "ordered" ? (
+          <ol key={start}>{children}</ol>
+        ) : (
+          <ul key={start}>{children}</ul>
+        ),
+      );
+    }
+  }
+  return <div className="site-rich-text">{nodes}</div>;
 }

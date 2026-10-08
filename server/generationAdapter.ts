@@ -3,9 +3,11 @@ import { isIP } from "node:net";
 import { request } from "node:https";
 import { randomUUID } from "node:crypto";
 import { parseProject, record } from "../src/domain/validation";
-import { fromTemplate, suggestTemplate } from "../src/domain/templates";
+import { fromTemplate, suggestTemplate, type TemplateId } from "../src/domain/templates";
 import type { Project } from "../src/domain/types";
 import { HttpError } from "./http";
+import { minimizeProposalProject } from "../src/domain/proposals";
+import { minimizeScopedProposal, type ProposalScope } from "../src/domain/scopedProposals";
 export function publicAddress(address: string): boolean {
   if (isIP(address) === 4) {
     const [a, b] = address.split(".").map(Number);
@@ -39,6 +41,7 @@ export function validateGenerationConfig(): void {
     u.username ||
     u.password ||
     u.hash ||
+    [...u.searchParams.keys()].some(key => /(?:token|secret|password|api.?key|authorization)/i.test(key)) ||
     (u.port && u.port !== "443")
   )
     throw new Error(
@@ -48,15 +51,20 @@ export function validateGenerationConfig(): void {
 export async function generateFromBrief(
   prompt: string,
   name: string,
+  options: { template?: TemplateId; mode?: "template" | "recommend"; brief?: Project["settings"]["brief"]; baseProject?: Project; operation?: string; targetBlockId?: string; proposalScope?: ProposalScope } = {},
 ): Promise<{ project: Project; source: string }> {
+  const template = options.mode === "template" && options.template ? options.template : suggestTemplate(prompt);
+  const base = options.baseProject ?? fromTemplate(template, name, prompt);
+  if (options.brief) base.settings.brief = options.brief;
   if (!process.env.GENERATION_API_URL)
     return {
-      project: fromTemplate(suggestTemplate(prompt), name, prompt),
+      project: base,
       source: "설명 기반 로컬 템플릿",
     };
   validateGenerationConfig();
   const url = new URL(process.env.GENERATION_API_URL);
-  const addresses = await lookup(url.hostname, { all: true });
+  let dnsDeadline:ReturnType<typeof setTimeout>|undefined;
+  const addresses = await Promise.race([lookup(url.hostname, { all: true }),new Promise<never>((_resolve,reject)=>{dnsDeadline=setTimeout(()=>reject(new HttpError(504,"GENERATION_EXTERNAL","생성 서비스의 주소 조회 제한 시간을 초과했습니다.")),5000);})]).finally(()=>clearTimeout(dnsDeadline));
   if (!addresses.length || addresses.some((x) => !publicAddress(x.address)))
     throw new HttpError(
       503,
@@ -64,10 +72,18 @@ export async function generateFromBrief(
       "생성 API는 공개 네트워크 주소여야 합니다.",
     );
   const requestId = randomUUID();
+  const sentProject = options.baseProject ? options.proposalScope ? minimizeScopedProposal(base,options.proposalScope) : minimizeProposalProject(base, options.targetBlockId) : structuredClone(base);
   const payload = JSON.stringify({
     prompt,
     name,
     schemaVersion: 2,
+    template,
+    mode: options.mode ?? "recommend",
+    brief: options.brief,
+    operation: options.operation ?? "draft",
+    baseProject: sentProject,
+    targetBlockId: options.targetBlockId,
+    scope: options.proposalScope,
     constraints: { maxPages: 100, maxBlocks: 1000, noInventedClaims: true },
   });
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -140,8 +156,14 @@ export async function generateFromBrief(
       );
     try {
       const value = record(JSON.parse(response.body) as unknown);
+      const project = parseProject(value.project ?? record(value.data).project);
+      if (options.mode === "template" || options.baseProject) {
+        if (JSON.stringify(project.pages.map(p => [p.id,p.path,p.home])) !== JSON.stringify(base.pages.map(p => [p.id,p.path,p.home])) || JSON.stringify(project.blocks.map(b => [b.id,b.type,b.pageId,b.parentId])) !== JSON.stringify(base.blocks.map(b => [b.id,b.type,b.pageId,b.parentId]))) throw new Error("Template structure changed");
+        project.id = base.id;
+        project.revision = base.revision;
+      }
       return {
-        project: parseProject(value.project ?? record(value.data).project),
+        project,
         source: "설정된 외부 생성 API",
       };
     } catch {

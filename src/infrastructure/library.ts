@@ -1,14 +1,28 @@
 import { parseProject } from "../domain/validation";
 import type { Project } from "../domain/types";
 const DB = "automade-studio";
+let namespace = "";
+export function libraryIdentity(): string {
+  return namespace;
+}
+export function setLibraryNamespace(accountId: string | null): void {
+  namespace = accountId ? `:creator:${encodeURIComponent(accountId)}` : "";
+}
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB, 1);
+    const request = indexedDB.open(DB + namespace, 3);
     request.onupgradeneeded = () => {
       const db = request.result;
-      db.createObjectStore("projects", { keyPath: "id" });
-      db.createObjectStore("backups", { keyPath: "key" });
-      db.createObjectStore("evidence", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("projects"))
+        db.createObjectStore("projects", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("backups"))
+        db.createObjectStore("backups", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("evidence"))
+        db.createObjectStore("evidence", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("syncBases"))
+        db.createObjectStore("syncBases", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("commands"))
+        db.createObjectStore("commands", { keyPath: "commandId" });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () =>
@@ -21,7 +35,7 @@ function openDatabase(): Promise<IDBDatabase> {
       reject(new Error("다른 탭의 저장소를 닫은 뒤 다시 시도하세요."));
   });
 }
-async function transaction<T>(
+export async function libraryTransaction<T>(
   store: string,
   mode: IDBTransactionMode,
   operation: (store: IDBObjectStore) => IDBRequest<T>,
@@ -48,6 +62,7 @@ async function transaction<T>(
     db.close();
   }
 }
+const transaction = libraryTransaction;
 export async function listProjects(): Promise<Project[]> {
   const values = await transaction<unknown[]>("projects", "readonly", (s) =>
     s.getAll(),
@@ -56,7 +71,20 @@ export async function listProjects(): Promise<Project[]> {
     .map(parseProject)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
-export async function persistProject(project: Project): Promise<void> {
+export async function listSyncBases(): Promise<Project[]> {
+  return (
+    await transaction<unknown[]>("syncBases", "readonly", (s) => s.getAll())
+  ).map(parseProject);
+}
+export async function rememberSyncBase(project: Project): Promise<void> {
+  await transaction("syncBases", "readwrite", (s) =>
+    s.put(parseProject(project)),
+  );
+}
+export async function persistProject(
+  project: Project,
+  options: { canonical?: boolean } = {},
+): Promise<void> {
   const p = parseProject(project);
   const db = await openDatabase();
   try {
@@ -69,7 +97,8 @@ export async function persistProject(project: Project): Promise<void> {
         if (
           old &&
           (old.revision > p.revision ||
-            (old.revision === p.revision &&
+            (!options.canonical &&
+              old.revision === p.revision &&
               JSON.stringify(old) !== JSON.stringify(p)))
         ) {
           tx.abort();
@@ -80,7 +109,7 @@ export async function persistProject(project: Project): Promise<void> {
           );
           return;
         }
-        if (old && old.revision !== p.revision)
+        if (old && JSON.stringify(old) !== JSON.stringify(p))
           tx.objectStore("backups").put({
             key: `${old.id}:${old.revision}:${Date.now()}`,
             project: old,
@@ -124,6 +153,7 @@ export async function preserveEvidence(
   );
 }
 export async function importLegacy(): Promise<Project | null> {
+  if (namespace) return null;
   const raw = localStorage.getItem("interface-auto-builder.project");
   if (!raw || localStorage.getItem("automade-legacy-imported")) return null;
   await preserveEvidence(raw, "legacy-localStorage");

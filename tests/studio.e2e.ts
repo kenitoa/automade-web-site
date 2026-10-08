@@ -17,7 +17,10 @@ async function fresh(page: import("@playwright/test").Page) {
     .getByLabel("사이트 이름", { exact: true })
     .fill("브라우저 검증");
   await page
-    .getByRole("button", { name: "프로젝트 만들기", exact: true })
+    .getByRole("button", { name: "구조 미리보기", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "검토한 초안 적용", exact: true })
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
 }
@@ -45,9 +48,7 @@ test("organized editor supports content, undo, recovery and responsive view", as
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await fresh(page);
-  await page
-    .getByRole("button", { name: "첫 화면 안내", exact: false })
-    .click();
+  await page.getByRole("button", { name: "첫 화면 안내", exact: true }).click();
   await expect(page.locator(".site-root h1")).toBeVisible();
   await page
     .locator(".properties")
@@ -99,9 +100,16 @@ test("one click opens a real generated site with working form, table, tabs, moda
   await expect(site.getByRole("dialog")).toBeVisible();
   await site.keyboard.press("Escape");
   await expect(site.getByRole("dialog")).not.toBeVisible();
-  await site.getByLabel("이름", { exact: false }).fill("테스트 사용자");
-  await site.getByLabel("이메일", { exact: false }).fill("user@example.org");
   await site
+    .locator(".block-form")
+    .getByLabel("이름", { exact: false })
+    .fill("테스트 사용자");
+  await site
+    .locator(".block-form")
+    .getByLabel("이메일", { exact: false })
+    .fill("user@example.org");
+  await site
+    .locator(".block-form")
     .getByLabel("문의 내용", { exact: false })
     .fill("실제 저장 확인입니다.");
   await site.getByRole("button", { name: "문의 보내기" }).click();
@@ -136,6 +144,13 @@ test("one click opens a real generated site with working form, table, tabs, moda
   );
   expect(overflow).toBe(false);
   await page.getByRole("button", { name: "운영", exact: true }).click();
+  await page.locator(".operational-metrics summary").click();
+  await expect(page.locator(".operational-metrics")).toContainText(
+    "서버가 기록한 전체 생성 작업의 완료 이벤트",
+  );
+  await expect(page.locator(".operational-metrics")).toContainText(
+    /생성 성공률 100% \(1\/1\)/,
+  );
   await page.getByRole("button", { name: "문의 조회" }).first().click();
   await expect(
     page.getByText("실제 저장 확인입니다.", { exact: false }),

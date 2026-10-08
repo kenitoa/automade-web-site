@@ -17,7 +17,7 @@ export function reply(
   status: number,
   data: unknown,
   error?: { code: string; message: string },
-  requestId: string = randomUUID(),
+  requestId: string = String(res.getHeader("X-Request-ID") || randomUUID()),
 ): void {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -41,10 +41,16 @@ export function headers(res: ServerResponse): void {
     "camera=(), microphone=(), geolocation=()",
   );
 }
+const parsedBodies = new WeakMap<IncomingMessage, { size: number; value: unknown }>();
 export async function body(
   req: IncomingMessage,
   max = 32_000_000,
 ): Promise<unknown> {
+  const cached = parsedBodies.get(req);
+  if (cached) {
+    if (cached.size > max) throw new HttpError(413, "BODY_TOO_LARGE", "요청 크기가 제한을 초과합니다.");
+    return cached.value;
+  }
   if (!String(req.headers["content-type"] ?? "").startsWith("application/json"))
     throw new HttpError(415, "CONTENT_TYPE", "JSON 요청이 필요합니다.");
   let size = 0;
@@ -63,7 +69,9 @@ export async function body(
     chunks.push(buffer);
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    parsedBodies.set(req, { size, value });
+    return value;
   } catch {
     throw new HttpError(400, "INVALID_JSON", "JSON 형식이 올바르지 않습니다.");
   }

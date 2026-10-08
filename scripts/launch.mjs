@@ -4,12 +4,16 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import {sourceIdentity} from './source-identity.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceId = createHash("sha256")
   .update(root.toLowerCase())
   .digest("hex")
   .slice(0, 16);
 const marker = path.join(root, ".data/running.json");
+const expectedBuild=sourceIdentity(root).hash;
+const expectedVersion = (await readFile(path.join(root, "src/domain/version.ts"), "utf8")).match(/GENERATOR_VERSION = "([^"]+)"/)?.[1];
+if(!expectedVersion)throw new Error("생성 서비스 버전 정보를 확인할 수 없습니다.");
 async function healthy(url) {
   try {
     const u = new URL(url);
@@ -20,7 +24,8 @@ async function healthy(url) {
     const j = await h.json();
     if (
       j.data?.service !== "automade-studio" ||
-      j.data?.workspaceId !== workspaceId
+      j.data?.workspaceId !== workspaceId ||
+      j.data?.generatorVersion !== expectedVersion || j.data?.buildHash!==expectedBuild
     )
       return false;
     const html = await (
@@ -73,6 +78,7 @@ try {
   if (previous?.url && (await healthy(previous.url))) {
     await open(previous.url);
   } else {
+    if(previous?.url)console.log("기존 서버를 재사용할 수 없어 최신 버전을 실행합니다. 이전 실행 창이 남아 있다면 종료하세요.");
     const npmCli = path.join(
       path.dirname(process.execPath),
       "node_modules/npm/bin/npm-cli.js",

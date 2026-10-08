@@ -1,0 +1,10 @@
+import type {ExpansionScope} from './expansion';
+import type {FieldComment,RevisionReview,PresenceEntry} from './expansion';
+export interface RuntimeCollaboration {events:{id:string;operation:string;status:string;startedAt:number;finishedAt:number}[];cursor:string;hasMore:boolean;resetRequired:boolean;comments:(FieldComment & {targetStatus:'active'|'missing'})[];reviews:RevisionReview[];presence:PresenceEntry[];projectRevision:number}
+export interface RuntimeTask {id:string;kind:string;title:string;status:string;projectId:string;environmentId?:string;nextAction:string;reason?:string;href?:string}
+export interface ExperimentInput {name:string;hypothesis:string;unit:'account'|'workspace';metric:'first-publish'|'save-success'|'task-completed';minSamples:number;guardrailErrorRate:number;variants:{id:string;name:string}[];durationDays:number}
+export interface Experiment extends ExperimentInput {id:string;scope:ExpansionScope;revision:number;status:'running'|'stopped';createdAt:number;endsAt:number;stopReason:string|null}
+export interface StorageMigrationSummary {id:string;state:string;target:'sqlite-local';counts:Record<string,number>;sourceConfigRevision:number;createdAt:number;updatedAt:number;externalProviders:'not-configured'}
+export interface WorkerPolicySnapshot {revision:number;policy:{maxRunning:number;pools:{standard:number;cpu:number;io:number;recovery:number};maxDurationMs:number;drainMs:number}}
+export interface RuntimeAlertPolicy {id:string;metric:'http-errors'|'queue-unknown'|'outbox-blocked'|'latency-ms';threshold:number;windowMs:number;revision:number;enabled:number}
+export interface RuntimeObservabilitySnapshot {spans:{id:string;traceId:string;parentId:string|null;operation:string;startedAt:number;durationMs:number;status:string;errorCode:string|null}[];metrics:{operation:string;status:string;requests:number;averageMs:number;maxMs:number}[];incidents:{id:string;kind:string;status:string;body:unknown;createdAt:number;updatedAt:number}[];exporter:{protocol:'otlp-http-json';status:'configured'|'not-configured'}}

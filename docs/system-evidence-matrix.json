@@ -1,0 +1,664 @@
+[
+  {
+    "id": "H01",
+    "code": [
+      "server/runtimeIdentity.ts",
+      "scripts/launch.mjs"
+    ],
+    "tests": [
+      "tests/artifact-integrity.test.ts",
+      "tests/work-queue.test.ts",
+      "delivery"
+    ],
+    "external": [
+      "other OS runtimes"
+    ]
+  },
+  {
+    "id": "H02",
+    "code": [
+      "server/useCases.ts",
+      "server/expansion/access.ts"
+    ],
+    "tests": [
+      "tests/system-operations.test.ts",
+      "tests/managed-studio.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H03",
+    "code": [
+      "server/operationContext.ts",
+      "server/projectCommands.ts",
+      "server/workQueue.ts"
+    ],
+    "tests": [
+      "tests/system-runtime.test.ts",
+      "tests/system-operations.test.ts",
+      "tests/canonical-project-save.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H04",
+    "code": [
+      "server/advancement/config.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/system-operations.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H05",
+    "code": [
+      "server/advancement/config.ts",
+      "server/advancement/service.ts",
+      "server/expansionWorker.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H06",
+    "code": [
+      "server/useCases.ts",
+      "src/domain/artifactContracts.ts",
+      "server/artifactIntegrity.ts",
+      "server/workerProtocol.ts"
+    ],
+    "tests": [
+      "tests/system-operations.test.ts",
+      "tests/artifact-integrity.test.ts",
+      "delivery",
+      "tests/worker-protocol.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H07",
+    "code": [
+      "server/advancement/content.ts",
+      "server/store.ts"
+    ],
+    "tests": [
+      "tests/advancement-content.test.ts",
+      "tests/advancement-content-runtime.test.ts",
+      "tests/legacy-content-compatibility.test.ts",
+      "tests/canonical-project-save.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H08",
+    "code": [
+      "server/advancement/content.ts",
+      "server/expansion/organizations.ts",
+      "server/workQueue.ts"
+    ],
+    "tests": [
+      "tests/advancement-content.test.ts",
+      "tests/system-backend.test.ts",
+      "capacity"
+    ],
+    "external": [
+      "production dataset and query plans"
+    ]
+  },
+  {
+    "id": "H09",
+    "code": [
+      "server/advancement/content.ts"
+    ],
+    "tests": [
+      "tests/advancement-content.test.ts",
+      "tests/advancement-content-runtime.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H10",
+    "code": [
+      "src/domain/contentState.ts",
+      "src/domain/shared.ts",
+      "src/domain/localization.ts"
+    ],
+    "tests": [
+      "tests/shared-structure.test.ts",
+      "tests/advancement-content-runtime.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H11",
+    "code": [
+      "server/systemDelivery.ts",
+      "server/advancement/content.ts"
+    ],
+    "tests": [
+      "tests/system-runtime.test.ts",
+      "drills"
+    ],
+    "external": []
+  },
+  {
+    "id": "H12",
+    "code": [
+      "server/storageMigration.ts",
+      "server/operationsService.ts"
+    ],
+    "tests": [
+      "tests/system-operations.test.ts"
+    ],
+    "external": [
+      "PostgreSQL object storage external queue and multi-host transition"
+    ]
+  },
+  {
+    "id": "H13",
+    "code": [
+      "server/advancement/security.ts",
+      "src/editor/StepUpDialog.tsx"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/managed-studio.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H14",
+    "code": [
+      "server/advancement/identities.ts",
+      "server/expansion/credentials.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H15",
+    "code": [
+      "server/advancement/keyring.ts",
+      "server/advancement/secrets.ts",
+      "server/expansion/secrets.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts"
+    ],
+    "external": [
+      "operator key custody and real provider secret verification"
+    ]
+  },
+  {
+    "id": "H16",
+    "code": [
+      "server/expansion/blobs.ts",
+      "src/editor/BlobAssetsPanel.tsx",
+      "server/imageProcessing.ts",
+      "server/imageWorker.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/generator-blob.test.ts",
+      "tests/image-processing.test.ts"
+    ],
+    "external": [
+      "malware scanner provider"
+    ]
+  },
+  {
+    "id": "H17",
+    "code": [
+      "server/advancement/privacy.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts"
+    ],
+    "external": [
+      "operator retention rules and remote removal evidence"
+    ]
+  },
+  {
+    "id": "H18",
+    "code": [
+      "server/advancement/security.ts",
+      "server/advancement/audit.ts",
+      "server/expansion/access.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts"
+    ],
+    "external": [
+      "external signed audit checkpoint custody"
+    ]
+  },
+  {
+    "id": "H19",
+    "code": [
+      "server/workQueue.ts",
+      "server/workerClient.ts"
+    ],
+    "tests": [
+      "tests/system-operations.test.ts",
+      "tests/system-runtime.test.ts",
+      "drills"
+    ],
+    "external": []
+  },
+  {
+    "id": "H20",
+    "code": [
+      "server/workQueue.ts"
+    ],
+    "tests": [
+      "tests/system-runtime.test.ts",
+      "tests/work-queue.test.ts"
+    ],
+    "external": [
+      "multi-host production fairness under load"
+    ]
+  },
+  {
+    "id": "H21",
+    "code": [
+      "server/systemDelivery.ts",
+      "server/index.ts",
+      "server/expansionWorker.ts"
+    ],
+    "tests": [
+      "tests/system-runtime.test.ts",
+      "tests/expansion-integration.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H22",
+    "code": [
+      "server/advancement/workflows.ts",
+      "server/expansion/workflows.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/expansion-integration.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H23",
+    "code": [
+      "server/advancement/adapters.ts",
+      "server/platform/connections.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/platform.test.ts"
+    ],
+    "external": [
+      "real provider DNS TLS idempotency and failure behavior"
+    ]
+  },
+  {
+    "id": "H24",
+    "code": [
+      "server/advancement/reconciliation.ts",
+      "server/operationsService.ts",
+      "server/index.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/expansion-reconciliation.test.ts",
+      "tests/system-operations.test.ts"
+    ],
+    "external": [
+      "real provider status verification"
+    ]
+  },
+  {
+    "id": "H25",
+    "code": [
+      "server/advancement/ledger.ts",
+      "server/platform/business.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/platform.test.ts"
+    ],
+    "external": [
+      "real payment refund and settlement"
+    ]
+  },
+  {
+    "id": "H26",
+    "code": [
+      "src/domain/timezones.ts",
+      "server/expansion/bookings.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/expansion-integration.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H27",
+    "code": [
+      "server/advancement/service.ts",
+      "server/expansion/usage.ts",
+      "server/workerUsage.ts",
+      "server/workerClient.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/expansion-integration.test.ts",
+      "tests/worker-usage.test.ts",
+      "tests/image-processing.test.ts",
+      "tests/storage-usage.test.ts"
+    ],
+    "external": [
+      "real provider invoice evidence"
+    ]
+  },
+  {
+    "id": "H28",
+    "code": [
+      "src/domain/quality.ts",
+      "src/domain/proposals.ts",
+      "server/generationAdapter.ts"
+    ],
+    "tests": [
+      "tests/proposals-quality.test.ts",
+      "tests/expansion-domain.test.ts"
+    ],
+    "external": [
+      "live AI quality and human factual review"
+    ]
+  },
+  {
+    "id": "H29",
+    "code": [
+      "src/domain/shared.ts",
+      "src/domain/blockRegistry.ts",
+      "src/domain/packages.ts"
+    ],
+    "tests": [
+      "tests/shared-structure.test.ts",
+      "tests/expansion-domain.test.ts",
+      "tests/system-backend.test.ts"
+    ],
+    "external": [
+      "external publisher identity trust"
+    ]
+  },
+  {
+    "id": "H30",
+    "code": [
+      "server/artifactIntegrity.ts",
+      "server/artifactSigning.ts",
+      "server/deploymentIntegrity.ts",
+      "scripts/build-generated.mjs"
+    ],
+    "tests": [
+      "tests/artifact-integrity.test.ts",
+      "delivery"
+    ],
+    "external": [
+      "other OS independent packaging and operator signing trust"
+    ]
+  },
+  {
+    "id": "H31",
+    "code": [
+      "src/editor/StudioTaskInbox.tsx",
+      "server/systemRuntimeService.ts"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts",
+      "tests/managed-studio.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H32",
+    "code": [
+      "src/editor/useStudioNavigation.ts",
+      "src/editor/SystemRuntimePanel.tsx"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts",
+      "tests/expansion-editor.e2e.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H33",
+    "code": [
+      "src/infrastructure/projectJournal.ts",
+      "src/editor/useStudio.ts",
+      "server/projectCommands.ts"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts",
+      "tests/editor-advancement.test.ts",
+      "tests/system-runtime.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H34",
+    "code": [
+      "src/infrastructure/projectMerge.ts",
+      "server/systemRuntimeService.ts"
+    ],
+    "tests": [
+      "tests/project-merge.test.ts",
+      "tests/cms-conflict.e2e.ts",
+      "tests/system-editor.e2e.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H35",
+    "code": [
+      "src/editor/Workspace.tsx",
+      "src/editor/LayerPanel.tsx",
+      "src/editor/CmsWorkingSet.tsx"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts",
+      "capacity"
+    ],
+    "external": [
+      "physical device and longer editor soak measurements"
+    ]
+  },
+  {
+    "id": "H36",
+    "code": [
+      "src/editor/EditorDialog.tsx",
+      "src/editor/StepUpDialog.tsx",
+      "src/editor/Studio.tsx"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts",
+      "tests/editor-upgrade.e2e.ts"
+    ],
+    "external": [
+      "screen reader and physical mobile keyboard audits"
+    ]
+  },
+  {
+    "id": "H37",
+    "code": [
+      "server/operationsService.ts",
+      "server/siteServer.ts"
+    ],
+    "tests": [
+      "tests/system-operations.test.ts",
+      "tests/advancement-content-runtime.test.ts",
+      "tests/system-promotion-race.test.ts"
+    ],
+    "external": [
+      "real public deployment promotion"
+    ]
+  },
+  {
+    "id": "H38",
+    "code": [
+      ".github/workflows/release.yml",
+      "scripts/publish-reviewed-release.ts"
+    ],
+    "tests": [
+      "tests/reviewed-release.test.ts",
+      "tests/deployment.test.ts"
+    ],
+    "external": [
+      "GitHub environment approval and actual push deployment SHA"
+    ]
+  },
+  {
+    "id": "H39",
+    "code": [
+      "server/privatePreview.ts",
+      "src/editor/SystemRuntimePanel.tsx"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts",
+      "tests/system-operations.test.ts"
+    ],
+    "external": [
+      "remote TLS domain renewal managed CDN purge and third-party cache removal"
+    ]
+  },
+  {
+    "id": "H40",
+    "code": [
+      "server/advancement/backups.ts",
+      "server/operationsService.ts",
+      "server/artifactBackups.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/operations.test.ts",
+      "tests/system-operations.test.ts"
+    ],
+    "external": [
+      "new physical machine recovery and operator key backup"
+    ]
+  },
+  {
+    "id": "H41",
+    "code": [
+      "server/runtimeIdentity.ts",
+      "server/index.ts",
+      "server/workQueue.ts"
+    ],
+    "tests": [
+      "tests/system-runtime.test.ts",
+      "tests/server-boundaries.test.ts",
+      "drills"
+    ],
+    "external": [
+      "production process supervisor configuration"
+    ]
+  },
+  {
+    "id": "H42",
+    "code": [
+      "server/systemObservability.ts",
+      "server/operationContext.ts",
+      "server/workQueue.ts"
+    ],
+    "tests": [
+      "tests/system-operations.test.ts",
+      "tests/site-observability.test.ts"
+    ],
+    "external": [
+      "real OTLP collector and alert delivery service"
+    ]
+  },
+  {
+    "id": "H43",
+    "code": [
+      "scripts/verify-system.ts",
+      "docs/system-evidence-matrix.json"
+    ],
+    "tests": [
+      "build",
+      "test",
+      "browser",
+      "delivery"
+    ],
+    "external": [
+      "remote CI execution"
+    ]
+  },
+  {
+    "id": "H44",
+    "code": [
+      "scripts/system-benchmark.ts"
+    ],
+    "tests": [
+      "capacity",
+      "tests/system-editor.e2e.ts"
+    ],
+    "external": [
+      "production sustained concurrency capacity and 24 hour soak"
+    ]
+  },
+  {
+    "id": "H45",
+    "code": [
+      "scripts/system-drill.ts"
+    ],
+    "tests": [
+      "drills",
+      "tests/expansion-reconciliation.test.ts"
+    ],
+    "external": [
+      "OS disk exhaustion real provider outage multi-host and site loss drill"
+    ]
+  },
+  {
+    "id": "H46",
+    "code": [
+      "server/advancement/lifecycle.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts"
+    ],
+    "external": []
+  },
+  {
+    "id": "H47",
+    "code": [
+      "server/advancement/catalog.ts",
+      "scripts/check-extension.ts"
+    ],
+    "tests": [
+      "tests/system-backend.test.ts",
+      "tests/expansion-domain.test.ts"
+    ],
+    "external": [
+      "operator external signer approval and support marketplace"
+    ]
+  },
+  {
+    "id": "H48",
+    "code": [
+      "server/systemRuntimeService.ts",
+      "src/editor/useProductExperiments.ts"
+    ],
+    "tests": [
+      "tests/system-editor.e2e.ts"
+    ],
+    "external": [
+      "real user sample target and business decision"
+    ]
+  }
+]

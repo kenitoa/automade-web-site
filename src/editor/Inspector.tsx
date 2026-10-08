@@ -1,5 +1,7 @@
 import type { Action, Block, Field, Project } from "../domain/types";
 import { uid } from "../domain/catalog";
+import { languageLabel } from "../domain/languages";
+import { projectBlockDefinition } from "../domain/blockRegistry";
 interface Props {
   project: Project;
   block: Block | null;
@@ -115,7 +117,12 @@ export default function Inspector({ project, block, update, selected }: Props) {
   const patch = (change: (block: Block) => void) =>
     update((p) => {
       const b = p.blocks.find((x) => x.id === block?.id);
-      if (b) change(b);
+      if (b) {
+        const designBefore = JSON.stringify(b.design);
+        change(b);
+        if (JSON.stringify(b.design) !== designBefore)
+          b.design.themeMode = "custom";
+      }
     });
   const prop = (
     key:
@@ -134,19 +141,22 @@ export default function Inspector({ project, block, update, selected }: Props) {
     return (
       <div className="inspector">
         <h3>사이트 설정</h3>
-        <label>
-          사용자 언어 문구 (JSON)
-          <textarea
-            rows={3}
-            value={project.settings.customLanguageText}
-            onChange={(e) =>
-              update((p) => {
-                p.settings.customLanguageText = e.target.value;
-              })
-            }
-          />
-          <small>기본 문구를 키로, 표시할 문구를 값으로 입력하세요.</small>
-        </label>
+        <details>
+          <summary>고급 언어 JSON</summary>
+          <label>
+            사용자 언어 문구 (JSON)
+            <textarea
+              rows={3}
+              value={project.settings.customLanguageText}
+              onChange={(e) =>
+                update((p) => {
+                  p.settings.customLanguageText = e.target.value;
+                })
+              }
+            />
+            <small>기본 문구를 키로, 표시할 문구를 값으로 입력하세요.</small>
+          </label>
+        </details>
         <label>
           사이트 이름
           <input
@@ -176,12 +186,22 @@ export default function Inspector({ project, block, update, selected }: Props) {
             value={project.settings.language}
             onChange={(event) =>
               update((p) => {
-                p.settings.language = event.target.value === "en" ? "en" : "ko";
+                p.settings.language = event.target.value;
               })
             }
           >
-            <option value="ko">한국어</option>
-            <option value="en">English</option>
+            {[
+              ...new Set([
+                project.settings.language,
+                ...(project.settings.languages || []),
+                "ko",
+                "en",
+              ]),
+            ].map((language) => (
+              <option key={language} value={language}>
+                {languageLabel(language)}
+              </option>
+            ))}
           </select>
         </label>
         <label>
@@ -408,7 +428,7 @@ export default function Inspector({ project, block, update, selected }: Props) {
               숫자 데이터 (쉼표로 구분)
               <input
                 defaultValue={block.props.series.join(", ")}
-                key={`${block.id}-series`}
+                key={`${block.id}-series-${block.props.series.join(",")}`}
                 onBlur={(e) => {
                   const parts = e.target.value
                     .split(",")
@@ -626,7 +646,8 @@ export default function Inspector({ project, block, update, selected }: Props) {
           </button>
         </details>
       ) : null}
-      {["tabs", "cards", "faq", "pricing"].includes(block.type) ? (
+      {projectBlockDefinition(project, block)?.propertyProfile === "items" ||
+      ["tabs", "cards", "faq", "pricing"].includes(block.type) ? (
         <details open>
           <summary>항목 구성</summary>
           {block.props.items.map((item, index) => (
@@ -1022,6 +1043,7 @@ function FieldEditor({
         <label>
           선택 항목 (한 줄에 하나)
           <textarea
+            key={field.options.join("\n")}
             defaultValue={field.options.join("\n")}
             onBlur={(e) =>
               onChange({

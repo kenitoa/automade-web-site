@@ -1,0 +1,123 @@
+name: Publish reviewed release
+on:
+  workflow_run:
+    workflows: [Validate Studio]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full commit SHA with a successful Validate Studio run
+        required: true
+      operation:
+        description: Publish or explicitly restore a reviewed prior artifact
+        type: choice
+        options: [publish, rollback]
+        default: publish
+      prepared_artifact_id:
+        description: Prior reviewed GitHub artifact ID, required for rollback
+        required: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: reviewed-public-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: >-
+      vars.RELEASE_PROJECT_FILE != '' && vars.RELEASE_GATEWAY_URL != '' &&
+      vars.RELEASE_PUBLIC_ORIGIN != '' && vars.RELEASE_ALLOWED_HOSTS != '' &&
+      vars.RELEASE_APPROVAL_JSON != '' &&
+      ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.proof.outputs.commit }}
+    env:
+      RELEASE_PROJECT_FILE: ${{ vars.RELEASE_PROJECT_FILE }}
+      RELEASE_APPROVAL_FILE: .data/reviewed-release/approval.json
+      RELEASE_GATEWAY_URL: ${{ vars.RELEASE_GATEWAY_URL }}
+      RELEASE_PUBLIC_ORIGIN: ${{ vars.RELEASE_PUBLIC_ORIGIN }}
+      RELEASE_ALLOWED_HOSTS: ${{ vars.RELEASE_ALLOWED_HOSTS }}
+      RELEASE_APPROVAL_JSON: ${{ vars.RELEASE_APPROVAL_JSON }}
+      RELEASE_EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha || inputs.commit }}
+      AUTOMADE_SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha || inputs.commit }}
+      RELEASE_OPERATION: ${{ inputs.operation || 'publish' }}
+      RELEASE_PRIOR_ARTIFACT_ID: ${{ inputs.prepared_artifact_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+      - id: proof
+        name: Verify this exact main commit passed validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e "if(!/^[a-f0-9]{40}$/.test(process.env.RELEASE_EXPECTED_COMMIT))process.exit(1)"
+          git merge-base --is-ancestor "$RELEASE_EXPECTED_COMMIT" origin/main
+          mkdir -p .data/reviewed-release
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$RELEASE_EXPECTED_COMMIT&per_page=100" > .data/reviewed-release/run-proof.json
+          node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('.data/reviewed-release/run-proof.json','utf8'));if(!p.workflow_runs.some(r=>r.path==='.github/workflows/verify.yml'&&r.event==='push'&&r.conclusion==='success'&&r.head_sha===process.env.RELEASE_EXPECTED_COMMIT&&r.head_repository.full_name===process.env.GITHUB_REPOSITORY))throw Error('Exact source commit has no successful validation');fs.appendFileSync(process.env.GITHUB_OUTPUT,'commit='+process.env.RELEASE_EXPECTED_COMMIT+'\n');fs.writeFileSync(process.env.RELEASE_APPROVAL_FILE,process.env.RELEASE_APPROVAL_JSON);"
+      - run: npm ci
+      - if: env.RELEASE_OPERATION != 'rollback'
+        run: npm run build
+      - if: env.RELEASE_OPERATION == 'rollback'
+        name: Load the exact prior reviewed artifact without regenerating it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e "if(!/^[1-9][0-9]{0,19}$/.test(process.env.RELEASE_PRIOR_ARTIFACT_ID))throw Error('Prior reviewed artifact ID required')"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RELEASE_PRIOR_ARTIFACT_ID/zip" > .data/reviewed-release/prior.zip
+          node -e "const fs=require('node:fs'),cp=require('node:child_process');if(fs.statSync('.data/reviewed-release/prior.zip').size>50000000)throw Error('Artifact too large');const r=cp.spawnSync('unzip',['-Z','-1','.data/reviewed-release/prior.zip'],{encoding:'utf8'});if(r.status||r.stdout.trim()!=='prepared.json')throw Error('Expected only immutable prepared.json')"
+          unzip -p .data/reviewed-release/prior.zip prepared.json > .data/reviewed-release/prepared.json
+          npx tsx scripts/publish-reviewed-release.ts prepare-rollback
+      - name: Prepare once and freeze the exact reviewed bytes
+        if: env.RELEASE_OPERATION != 'rollback'
+        run: npx tsx scripts/publish-reviewed-release.ts prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-release-${{ steps.proof.outputs.commit }}
+          path: .data/reviewed-release/prepared.json
+          retention-days: 7
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: reviewed-release
+    env:
+      RELEASE_PROJECT_FILE: ${{ vars.RELEASE_PROJECT_FILE }}
+      RELEASE_APPROVAL_FILE: .data/reviewed-release/approval.json
+      RELEASE_GATEWAY_URL: ${{ vars.RELEASE_GATEWAY_URL }}
+      RELEASE_PUBLIC_ORIGIN: ${{ vars.RELEASE_PUBLIC_ORIGIN }}
+      RELEASE_ALLOWED_HOSTS: ${{ vars.RELEASE_ALLOWED_HOSTS }}
+      RELEASE_EXPECTED_COMMIT: ${{ needs.prepare.outputs.commit }}
+      RELEASE_GATEWAY_TOKEN: ${{ secrets.RELEASE_GATEWAY_TOKEN }}
+      RELEASE_OPERATION: ${{ inputs.operation || 'publish' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: reviewed-release-${{ needs.prepare.outputs.commit }}
+          path: .data/reviewed-release
+      - run: npm ci
+      - name: Publish or explicitly roll back the frozen reviewed artifact
+        run: npx tsx scripts/publish-reviewed-release.ts "$RELEASE_OPERATION"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-release-verification-${{ needs.prepare.outputs.commit }}
+          path: .data/reviewed-release/verification.json
+          retention-days: 30

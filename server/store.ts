@@ -4,6 +4,27 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Project, Row } from "../src/domain/types";
 import { parseProject, parseRows, record } from "../src/domain/validation";
+import { MIGRATION_2, OperationsStore } from "./operationsStore";
+import { PLATFORM_MIGRATION } from "./platform/schema";
+import { TABLE_HISTORY_MIGRATION } from "./tableHistory";
+import { EXPANSION_MIGRATION } from "./expansion/schema";
+import { WORK_MIGRATION } from "./workQueue";
+import { EXPANSION_BUSINESS_MIGRATION } from "./expansion/businessSchema";
+import { EXPANSION_SECURITY_MIGRATION } from "./expansion/securitySchema";
+import { SYSTEM_MIGRATION } from "./advancement/schema";
+import { CONTENT_MIGRATION } from "./advancement/contentSchema";
+import { SECURITY_MIGRATION } from "./advancement/securitySchema";
+import { RUNTIME_MIGRATION } from "./runtimeSchema";
+import {OPERATION_MIGRATION} from './operationSchema';
+import {ASSET_USAGE_MIGRATION} from './advancement/assetSchema';
+import {BOOKING_ADVANCEMENT_MIGRATION} from './advancement/bookingSchema';
+import { HttpError } from "./http";
+import type { CommandAcknowledgement } from "./projectCommands";
+function stableObject(_key:string,value:unknown):unknown {
+  return value!==null&&typeof value==='object'&&!Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([left],[right])=>left.localeCompare(right)))
+    : value;
+}
 export class ConflictError extends Error {
   code = "CONFLICT";
 }
@@ -19,6 +40,9 @@ CREATE TABLE IF NOT EXISTS table_data(block_id TEXT PRIMARY KEY,version INTEGER 
 CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY,operation TEXT NOT NULL,resource_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL);`;
 export class Store {
   readonly db: DatabaseSync;
+  readonly operations: OperationsStore;
+  projectHydrator: (project: Project) => Project = project => project;
+  beforeProjectWrite: (previous: Project | null, incoming: Project) => Project = (_previous, incoming) => incoming;
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path, { timeout: 5000 });
@@ -26,22 +50,28 @@ export class Store {
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)",
     );
-    const version = this.db
-      .prepare("SELECT MAX(version) AS version FROM migrations")
-      .get();
-    if (!version?.version) {
+    const applied=Number(this.db.prepare("SELECT COUNT(*) AS count FROM migrations").get()?.count??0);
+    if(path!==":memory:"&&applied>0&&[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15].some(version=>!this.db.prepare("SELECT version FROM migrations WHERE version=?").get(version))){
+      const backup=path+".before-upgrade-"+new Date().toISOString().replaceAll(":","-")+"-"+randomUUID()+".sqlite";
+      try{this.db.prepare("VACUUM INTO ?").run(backup);}catch(error){this.db.close();throw error;}
+    }
+    for (const [index, migration] of [MIGRATION_1, MIGRATION_2, PLATFORM_MIGRATION, TABLE_HISTORY_MIGRATION, EXPANSION_MIGRATION, WORK_MIGRATION, EXPANSION_BUSINESS_MIGRATION, EXPANSION_SECURITY_MIGRATION,SYSTEM_MIGRATION,CONTENT_MIGRATION,SECURITY_MIGRATION,RUNTIME_MIGRATION,OPERATION_MIGRATION,ASSET_USAGE_MIGRATION,BOOKING_ADVANCEMENT_MIGRATION].entries()) {
+      const version = index + 1;
+      if (this.db.prepare("SELECT version FROM migrations WHERE version=?").get(version)) continue;
       this.db.exec("BEGIN IMMEDIATE");
       try {
-        this.db.exec(MIGRATION_1);
+        this.db.exec(migration);
         this.db
-          .prepare("INSERT INTO migrations(version,applied_at) VALUES(1,?)")
-          .run(new Date().toISOString());
+          .prepare("INSERT INTO migrations(version,applied_at) VALUES(?,?)")
+          .run(version, new Date().toISOString());
         this.db.exec("COMMIT");
       } catch (error) {
         this.db.exec("ROLLBACK");
+        this.db.close();
         throw error;
       }
     }
+    this.operations = new OperationsStore(this.db);
   }
   close(): void {
     this.db.close();
@@ -50,16 +80,29 @@ export class Store {
     return this.db
       .prepare("SELECT body FROM projects ORDER BY updated_at DESC LIMIT 1000")
       .all()
-      .map((row) => parseProject(JSON.parse(String(row.body)) as unknown));
+      .map((row) => this.projectHydrator(parseProject(JSON.parse(String(row.body)) as unknown)));
   }
   project(id: string): Project | null {
+    const raw = this.rawProject(id);
+    return raw ? this.projectHydrator(raw) : null;
+  }
+  rawProject(id: string): Project | null {
     const row = this.db.prepare("SELECT body FROM projects WHERE id=?").get(id);
     return row ? parseProject(JSON.parse(String(row.body)) as unknown) : null;
   }
-  save(project: Project): void {
+  save(project: Project, baseRevision?: number): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const existing = this.project(project.id);
+      this.writeProject(project, baseRevision);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  private writeProject(incoming: Project, baseRevision?: number): Project {
+      const existing = this.rawProject(incoming.id);
+      const comparable = existing ? this.projectHydrator(existing) : null;
+      const project = this.beforeProjectWrite(existing, incoming);
+      if (baseRevision !== undefined && (!Number.isInteger(baseRevision) || baseRevision < -1 || (existing?.revision ?? -1) !== baseRevision))
+        throw new ConflictError("다른 저장본이 변경되었습니다. 마지막 동기화본과 비교한 뒤 병합하세요.");
       if (existing && existing.revision > project.revision)
         throw new ConflictError(
           "다른 저장본이 더 최신입니다. 프로젝트를 다시 불러오세요.",
@@ -67,7 +110,7 @@ export class Store {
       if (
         existing &&
         existing.revision === project.revision &&
-        JSON.stringify(existing) !== JSON.stringify(project)
+        JSON.stringify(comparable, stableObject) !== JSON.stringify(project, stableObject)
       )
         throw new ConflictError(
           "동일한 버전의 내용이 충돌합니다. 복제하여 저장하세요.",
@@ -93,11 +136,29 @@ export class Store {
           project.updatedAt,
         );
       this.audit("project.save", project.id, "success");
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+      return project;
+  }
+  saveCommand(projectId: string, actorKey: string, commandId: string, fingerprint: string, prepare: (current: Project) => Project): CommandAcknowledgement {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const previous = this.db.prepare("SELECT fingerprint,result FROM system_command_receipts WHERE actor_key=? AND project_id=? AND command_id=?").get(actorKey,projectId,commandId);
+      if(previous){
+        if(previous.fingerprint!==fingerprint)throw new HttpError(409,"COMMAND_IDEMPOTENCY","같은 명령 식별자의 내용이 다릅니다.");
+        const value = record(JSON.parse(String(previous.result)) as unknown);
+        const result:CommandAcknowledgement={commandId,revision:Number(value.revision),project:parseProject(value.project),ack:true,status:"applied",replayed:true};
+        this.db.exec("COMMIT");return result;
+      }
+      const current=this.project(projectId);if(!current)throw new HttpError(404,"PROJECT_NOT_FOUND","명령 대상 원본이 없습니다.");
+      const candidate=prepare(current);if(candidate.id!==projectId)throw new HttpError(403,"COMMAND_PROJECT","명령 범위를 확인하세요.");
+      const saved=this.writeProject(candidate,current.revision),canonical=this.project(projectId)??saved;
+      const result:CommandAcknowledgement={commandId,revision:canonical.revision,project:canonical,ack:true,status:"applied",replayed:false};
+      this.db.prepare("INSERT INTO system_command_receipts VALUES(?,?,?,?,?,?,?)").run(actorKey,projectId,commandId,fingerprint,result.revision,JSON.stringify(result),Date.now());
+      this.db.exec("COMMIT");return result;
+    }catch(error){this.db.exec("ROLLBACK");throw error;}
+  }
+  commandReceipts(projectId:string,actorKey:string,ids:string[]):{commandId:string;revision:number;ack:true;status:"applied"}[]{
+    if(ids.length>100||ids.some(id=>! /^[a-zA-Z0-9_-]{1,100}$/.test(id)))throw new HttpError(400,"COMMAND_IDS","명령 식별자는 최대100개입니다.");
+    return ids.flatMap(id=>{const row=this.db.prepare("SELECT revision FROM system_command_receipts WHERE actor_key=? AND project_id=? AND command_id=?").get(actorKey,projectId,id);return row?[{commandId:id,revision:Number(row.revision),ack:true as const,status:"applied" as const}]:[];});
   }
   backups(id: string): Project[] {
     return this.db
@@ -136,11 +197,12 @@ export class Store {
       .run(directory, error ? "failed" : "ready", error ?? null, id);
   }
   recoverInterrupted(): void {
+    this.operations.recover();
     this.db
       .prepare(
-        "UPDATE exports SET status=\x27failed\x27,error_code=\x27PROCESS_INTERRUPTED\x27 WHERE status=\x27building\x27",
+        "UPDATE exports SET status=\x27failed\x27,error_code=\x27PROCESS_INTERRUPTED\x27 WHERE status=\x27building\x27 AND NOT EXISTS(SELECT 1 FROM resource_leases l WHERE l.resource='generation:'||exports.project_id AND l.expires_at>?)",
       )
-      .run();
+      .run(Date.now());
   }
   exports(): unknown[] {
     return this.db
@@ -255,6 +317,10 @@ export class Store {
   snapshot(target: string): void {
     this.db.exec(`VACUUM INTO '${target.replaceAll("'", "''")}'`);
   }
+  activeRelease(): string | null { return this.operations.activeRelease(); }
+  activateRelease(id: string): void { this.operations.setState("activeRelease", id); }
+  pauseProjectWrites(paused: boolean): void { this.operations.setState("writesPaused", paused); }
+  assertWritable(releaseId?: string): void { this.operations.assertWritable(releaseId); }
   stats(): Record<string, number> {
     return record({
       projects: this.db.prepare("SELECT COUNT(*) AS n FROM projects").get()?.n,

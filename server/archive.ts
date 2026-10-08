@@ -19,7 +19,7 @@ export async function sourceArchive(
   async function collect(folder: string) {
     for (const entry of await readdir(folder, { withFileTypes: true })) {
       if (
-        entry.name.startsWith(".") ||
+        (entry.name.startsWith(".") && ![".release.json", ".dockerignore"].includes(entry.name)) ||
         entry.name === "node_modules" ||
         entry.isSymbolicLink()
       )

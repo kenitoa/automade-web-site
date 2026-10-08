@@ -1,0 +1,27 @@
+services:
+  site:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      SITE_PUBLIC_ORIGIN: ${SITE_PUBLIC_ORIGIN:?Set exact HTTPS public origin}
+      SITE_ACTIVE_RELEASE_ID: ${SITE_ACTIVE_RELEASE_ID:?Set artifact release ID}
+      SITE_DEPLOYMENT_SHA256: ${SITE_DEPLOYMENT_SHA256:?Set verified manifest hash}
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:?Set administrator email}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?Set administrator password}
+      PLATFORM_ALLOWED_HOSTS: ${PLATFORM_ALLOWED_HOSTS:-}
+    ports:
+      - "127.0.0.1:${SITE_HTTP_PORT:-8080}:8080"
+    volumes:
+      - site-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+volumes:
+  site-data:
+    name: ${SITE_VOLUME_NAME:?Set a stable project-specific volume name}

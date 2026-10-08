@@ -1,0 +1,10 @@
+CREATE TABLE generation_jobs(id TEXT PRIMARY KEY REFERENCES exports(id), project_id TEXT NOT NULL, request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>=0), project_body TEXT NOT NULL CHECK(json_valid(project_body)), status TEXT NOT NULL CHECK(status IN('building','ready','failed','cancelled')), stage TEXT NOT NULL, checkpoints TEXT NOT NULL CHECK(json_valid(checkpoints)), result TEXT CHECK(result IS NULL OR json_valid(result)), error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_id,request_key));
+CREATE INDEX generation_project ON generation_jobs(project_id,created_at DESC);
+CREATE TABLE project_runtime(project_id TEXT PRIMARY KEY, active_release_id TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE runtime_state(key TEXT PRIMARY KEY,value TEXT NOT NULL CHECK(json_valid(value)));
+CREATE TABLE submission_workflow(submission_id TEXT PRIMARY KEY REFERENCES submissions(id),status TEXT NOT NULL DEFAULT 'new' CHECK(status IN('new','processing','completed','archived')),tags TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags)),note TEXT NOT NULL DEFAULT '',assignee TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL);
+CREATE TABLE data_backups(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,release_id TEXT,file TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0),reason TEXT NOT NULL,submissions INTEGER NOT NULL,tables_count INTEGER NOT NULL,created_at TEXT NOT NULL);
+CREATE INDEX data_backups_project ON data_backups(project_id,created_at DESC);
+CREATE TABLE retention_policies(project_id TEXT PRIMARY KEY,body TEXT NOT NULL CHECK(json_valid(body)));
+CREATE TABLE telemetry(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,operation TEXT NOT NULL,status TEXT NOT NULL,duration_ms INTEGER NOT NULL CHECK(duration_ms>=0),created_at TEXT NOT NULL);
+CREATE INDEX telemetry_project ON telemetry(project_id,created_at DESC);

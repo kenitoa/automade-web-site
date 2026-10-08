@@ -1,4 +1,11 @@
 import { CATALOG, createBlock, createProject } from "./catalog";
+import { enhanceProject } from "./enhancements";
+import { getChartData, validateTableRows } from "./content";
+import { blockContrast } from "./colors";
+import { normalizeLanguage } from "./languages";
+import { assertProjectCompatibility } from "./packages";
+import { createCmsUniqueIndex, validateCmsRecord } from "./cms";
+import { getBlockDefinition } from "./blockRegistry";
 import type {
   Action,
   Asset,
@@ -51,7 +58,7 @@ const boolean = (value: unknown, fallback = false): boolean => {
 export const safeColor = (value: unknown, fallback = "#ffffff"): string => {
   const str = text(value, 50);
   if (!str) return fallback;
-  if (!/^#[\da-f]{3}(?:[\da-f]{3})?(?:[\da-f]{2})?$/i.test(str))
+  if (!/^#(?:[\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i.test(str))
     throw new ValidationError("색상은 HEX 형식이어야 합니다.");
   return str;
 };
@@ -97,6 +104,9 @@ export function parseAction(value: unknown): Action {
 }
 export function parseField(value: unknown): Field {
   const v = record(value);
+  const fieldId = id(v.id);
+  if (["__consent", "__proto__", "constructor", "prototype"].includes(fieldId))
+    throw new ValidationError("예약된 필드 ID를 사용할 수 없습니다.");
   const type = v.type;
   if (
     ![
@@ -111,7 +121,7 @@ export function parseField(value: unknown): Field {
   )
     throw new ValidationError("지원하지 않는 폼 필드입니다.");
   return {
-    id: id(v.id),
+    id: fieldId,
     label: text(v.label, 200),
     type: type as Field["type"],
     required: boolean(v.required),
@@ -119,6 +129,9 @@ export function parseField(value: unknown): Field {
     min: finite(v.min, 0, -1000000, 1000000),
     max: finite(v.max, 2000, -1000000, 1000000),
     options: list(v.options, 100).map((x) => text(x, 200)),
+    ...(v.description !== undefined
+      ? { description: text(v.description, 2000) }
+      : {}),
   };
 }
 export function parseRows(value: unknown, columnCount: number): Row[] {
@@ -137,12 +150,26 @@ function parseAsset(value: unknown): Asset {
   const v = record(value);
   const mime = v.mime;
   const data = text(v.data, 8_000_000);
+  const ref = v.blobRef === undefined ? undefined : record(v.blobRef);
+  const blobRef = ref
+    ? {
+        id: id(ref.id),
+        projectId: id(ref.projectId),
+        sha256: text(ref.sha256, 64),
+      }
+    : undefined;
+  if (blobRef && !/^[a-f0-9]{64}$/.test(blobRef.sha256))
+    throw new ValidationError("이미지 파일 해시를 확인하세요.");
   if (
     !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
       String(mime),
     ) ||
-    !data.startsWith(`data:${String(mime)};base64,`) ||
-    !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(data)
+    (!data && !blobRef) ||
+    (Boolean(data) &&
+      (!data.startsWith(`data:${String(mime)};base64,`) ||
+        !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(
+          data,
+        )))
   )
     throw new ValidationError("허용된 이미지 파일만 사용할 수 있습니다.");
   return {
@@ -151,9 +178,11 @@ function parseAsset(value: unknown): Asset {
     mime: mime as Asset["mime"],
     data,
     alt: text(v.alt, 1000),
+    ...(blobRef ? { blobRef } : {}),
   };
 }
 export function parseProject(value: unknown): Project {
+  assertProjectCompatibility(value);
   const v = record(value);
   if (v.schemaVersion !== 2) return migrateLegacy(value);
   const defaultProject = createProject();
@@ -167,7 +196,7 @@ export function parseProject(value: unknown): Project {
     name: text(v.name, 200),
     updatedAt: text(v.updatedAt, 100),
     settings: {
-      language: settings.language === "en" ? "en" : "ko",
+      language: normalizeLanguage(settings.language ?? "ko"),
       description: text(settings.description, 2000),
       faviconAssetId: text(settings.faviconAssetId, 100),
       customLanguageText: text(settings.customLanguageText, 20000),
@@ -343,6 +372,12 @@ export function parseProject(value: unknown): Project {
     for (const collection of [b.props.fields, b.props.items, b.props.columns])
       if (new Set(collection.map((x) => x.id)).size !== collection.length)
         throw new ValidationError("블록 내부 ID가 중복됩니다.");
+  enhanceProject(p, v);
+  for (const block of p.blocks) {
+    const definition = getBlockDefinition(block.type);
+    const errors = definition?.validate(block, p);
+    if (errors?.length) throw new ValidationError(errors.join(" "));
+  }
   const issues = inspectProject(p);
   const structural = issues.find((x) =>
     ["BAD_PARENT", "CYCLE", "BAD_PAGE"].includes(x.code),
@@ -362,7 +397,7 @@ export function migrateLegacy(value: unknown): Project {
   const canvas = record(v.canvas),
     theme = record(v.theme),
     settings = record(v.settings);
-  p.settings.language = settings.language === "en" ? "en" : "ko";
+  p.settings.language = normalizeLanguage(settings.language ?? "ko");
   p.settings.customLanguageText = text(settings.customLanguageText, 20000);
   p.canvas.width = finite(canvas.width, 1440, 320, 10000);
   p.canvas.height = finite(canvas.height, 900, 320, 50000);
@@ -402,6 +437,7 @@ export function migrateLegacy(value: unknown): Project {
       mode: "absolute",
     };
     block.design.background = safeColor(design.background);
+    block.design.themeMode = "custom";
     block.design.color = safeColor(design.color, "#172033");
     block.design.padding = finite(design.padding, 28, 0, 200);
     block.design.radius = finite(design.radius, 16, 0, 100);
@@ -512,14 +548,19 @@ export function inspectProject(p: Project): Issue[] {
     if (b.type === "image") {
       if (!p.assets.some((a) => a.id === b.props.assetId))
         push("warning", "IMAGE_EMPTY", "이미지를 연결하세요.", b);
-      if (!b.props.alt.trim())
+      if (
+        !b.props.imageSettings?.decorative &&
+        !b.props.alt.trim() &&
+        !p.assets.find((a) => a.id === b.props.assetId)?.alt.trim()
+      )
         push("warning", "IMAGE_ALT", "이미지 대체 텍스트를 입력하세요.", b);
     }
-    if (b.type === "chart" && !b.props.series.length)
+    if (b.type === "chart" && !getChartData(p, b).values.length)
       push("warning", "CHART_EMPTY", "차트 데이터를 입력하세요.", b);
     if (
       ["tabs", "cards", "faq", "pricing"].includes(b.type) &&
-      !b.props.items.length
+      !b.props.items.length &&
+      !b.props.collectionBinding
     )
       push("warning", "ITEMS_EMPTY", "표시할 항목을 추가하세요.", b);
     if (b.layout.mode === "absolute")
@@ -552,27 +593,12 @@ export function inspectProject(p: Project): Issue[] {
       b.props.fields.some((f) => f.type === "select" && !f.options.length)
     )
       push("error", "SELECT_OPTIONS", "선택 필드에 선택지를 추가하세요.", b);
-    const luminance = (hex: string) => {
-      const h = hex.slice(1);
-      const expanded =
-        h.length === 3
-          ? h
-              .split("")
-              .map((c) => c + c)
-              .join("")
-          : h;
-      const v = [0, 2, 4]
-        .map((i) => parseInt(expanded.slice(i, i + 2), 16) / 255)
-        .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-      return 0.2126 * v[0]! + 0.7152 * v[1]! + 0.0722 * v[2]!;
-    };
-    const l1 = luminance(b.design.color),
-      l2 = luminance(b.design.background);
-    if ((Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05) < 4.5)
+    if (blockContrast(p, b) < 4.5)
       push("warning", "CONTRAST", "글자와 배경의 명도 대비를 확인하세요.", b);
     for (const action of [
       b.props.action,
       b.props.secondary,
+      ...(b.props.formSettings ? [b.props.formSettings.successAction] : []),
       ...b.props.items.map((x) => x.action),
     ]) {
       if (
@@ -613,11 +639,195 @@ export function inspectProject(p: Project): Issue[] {
   const home = p.pages.find((x) => x.home);
   if (!home?.published)
     push("error", "HOME_PRIVATE", "홈 페이지는 공개 상태여야 합니다.");
-  return issues;
+  for (const b of p.blocks) {
+    if (
+      b.props.collectionBinding &&
+      !p.collections?.some(
+        (c) => c.id === b.props.collectionBinding!.collectionId,
+      )
+    )
+      push(
+        "error",
+        "COLLECTION_TARGET",
+        "연결할 콘텐츠 컬렉션을 선택하세요.",
+        b,
+      );
+    if (b.props.chartBinding) {
+      const binding = b.props.chartBinding;
+      const table = p.blocks.find(
+        (x) => x.id === binding.tableBlockId && x.type === "table",
+      );
+      if (
+        !table ||
+        !table.props.columns.some(
+          (c) => c.id === binding.valueColumnId && c.type === "number",
+        ) ||
+        !table.props.columns.some((c) => c.id === binding.labelColumnId)
+      )
+        push(
+          "error",
+          "CHART_TARGET",
+          "차트에 연결할 표와 숫자 열을 확인하세요.",
+          b,
+        );
+    }
+    if (b.type === "table")
+      for (const error of validateTableRows(b.props.columns, b.props.rows))
+        push("error", "TABLE_RULE", `행 ${error.row + 1}: ${error.message}`, b);
+    if (
+      b.props.formSettings?.consentRequired &&
+      !b.props.formSettings.privacyNotice.trim()
+    )
+      push(
+        "error",
+        "CONSENT_NOTICE",
+        "동의를 받을 개인정보 안내를 입력하세요.",
+        b,
+      );
+    if (
+      /실제 내용을 입력|실제 서비스 소개|연락처와 운영 정보를 입력|첫 번째 항목|두 번째 항목/.test(
+        `${b.props.body} ${b.props.items.map((i) => `${i.title} ${i.body}`).join(" ")}`,
+      )
+    )
+      push("warning", "PLACEHOLDER", "기본 안내를 실제 정보로 바꾸세요.", b);
+    if (
+      b.props.primaryAction &&
+      ["자세히 보기", "확인"].includes(b.props.primaryAction) &&
+      b.type === "hero"
+    )
+      push(
+        "warning",
+        "ACTION_LABEL",
+        "버튼의 목적을 구체적인 문구로 표시하세요.",
+        b,
+      );
+  }
+  for (const page of p.pages) {
+    const headings = p.blocks
+      .filter((b) => !b.hidden && (b.pageId === page.id || b.pageId === "*"))
+      .sort((a, b) => a.layout.zIndex - b.layout.zIndex)
+      .filter(
+        (b) =>
+          b.props.title &&
+          !["navigation", "sidebar", "footer", "divider"].includes(b.type),
+      );
+    if (
+      headings.filter(
+        (b) => (b.props.headingLevel ?? (b.type === "hero" ? 1 : 2)) === 1,
+      ).length > 1
+    )
+      issues.push({
+        severity: "warning",
+        code: "HEADING_COUNT",
+        message: "페이지의 대표 제목을 하나로 정리하세요.",
+        pageId: page.id,
+        field: "props.headingLevel",
+      });
+    if (page.published && !page.seo?.noIndex && !p.settings.siteUrl)
+      issues.push({
+        severity: "warning",
+        code: "SITE_URL",
+        message: "공개 배포 후 대표 HTTPS 주소를 설정하세요.",
+        pageId: page.id,
+        field: "settings.siteUrl",
+        method: "manual",
+      });
+    if (
+      p.settings.languages?.length &&
+      p.settings.languages.some(
+        (lang) =>
+          lang !== p.settings.language && !page.translations?.[lang]?.title,
+      )
+    )
+      issues.push({
+        severity: "warning",
+        code: "TRANSLATION",
+        message: "추가 언어의 페이지 제목을 입력하세요.",
+        pageId: page.id,
+        field: "translations",
+      });
+  }
+  for (const collection of p.collections ?? []) {
+    const uniqueIndex = createCmsUniqueIndex(collection);
+    for (const item of collection.records)
+      for (const message of validateCmsRecord(
+        p,
+        collection,
+        item,
+        undefined,
+        uniqueIndex,
+      ))
+        issues.push({
+          severity:
+            item.status === "published" || item.workflow?.state === "scheduled"
+              ? "error"
+              : "warning",
+          code: "CMS_VALUE",
+          message,
+          field: `collections.${collection.id}.records.${item.id}.values`,
+        });
+    for (const field of collection.schema ?? [])
+      if (
+        field.type === "reference" &&
+        field.public &&
+        collection.access !== "members" &&
+        p.collections?.find(
+          (target) => target.id === field.referenceCollectionId,
+        )?.access === "members"
+      )
+        issues.push({
+          severity: "error",
+          code: "CMS_PRIVATE_REFERENCE",
+          message: "공개 관계 필드를 회원 콘텐츠에 연결할 수 없습니다.",
+          field: `collections.${collection.id}.schema.${field.id}`,
+        });
+  }
+  return issues.map((issue) => {
+    const fields: Record<string, string> = {
+      NAME: "name",
+      DESCRIPTION: "settings.description",
+      PAGE_TITLE: "title",
+      FORM_FIELDS: "props.fields",
+      FORM_TARGET: "props.dataSource",
+      FIELD_LABEL: "props.fields",
+      FIELD_RANGE: "props.fields",
+      SELECT_OPTIONS: "props.fields",
+      TABLE_COLUMNS: "props.columns",
+      TABLE_RULE: "props.rows",
+      IMAGE_EMPTY: "props.assetId",
+      IMAGE_ALT: "props.alt",
+      CHART_EMPTY: "props.series",
+      CHART_TARGET: "props.chartBinding",
+      COLLECTION_TARGET: "props.collectionBinding",
+      ITEMS_EMPTY: "props.items",
+      ABSOLUTE: "layout.mode",
+      OVERFLOW: "layout.width",
+      HEADING: "props.title",
+      UNCONNECTED_ACTION: "props.action",
+      ACTION_TARGET: "props.action",
+      ACTION_TYPE: "props.action",
+      CONTRAST: "design.color",
+      CONSENT_NOTICE: "props.formSettings",
+      PLACEHOLDER: "props.body",
+      ACTION_LABEL: "props.primaryAction",
+    };
+    return {
+      ...issue,
+      field: issue.field ?? fields[issue.code],
+      impact:
+        issue.impact ??
+        (issue.severity === "error"
+          ? "생성 또는 방문자의 주요 동작이 실패할 수 있습니다."
+          : "방문자가 내용을 이해하거나 사용하는 데 어려움이 생길 수 있습니다."),
+      remedy: issue.remedy ?? issue.message,
+      method: issue.method ?? "automatic",
+    };
+  });
 }
 export function validateForm(
   fields: Field[],
   value: unknown,
+  settings?: Block["props"]["formSettings"],
 ): { values: Record<string, string>; errors: Record<string, string> } {
   const raw = record(value),
     values: Record<string, string> = {},
@@ -641,6 +851,11 @@ export function validateForm(
       if (f.type === "checkbox" && v !== "true")
         errors[f.id] = "체크값을 확인하세요.";
     }
+  }
+  if (settings?.consentRequired) {
+    if (raw.__consent !== "true")
+      errors.__consent = "개인정보 안내를 확인하고 동의하세요.";
+    else values.__consent = "true";
   }
   return { values, errors };
 }

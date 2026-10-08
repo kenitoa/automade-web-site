@@ -15,12 +15,17 @@
     "preview": "node dist-service/server.mjs",
     "predev": "node scripts/build-service.mjs",
     "verify:delivery": "tsx scripts/verify-delivery.ts",
-    "pretest": "node scripts/build-service.mjs"
+    "extension:check": "tsx scripts/check-extension.ts",
+    "system:benchmark": "tsx scripts/system-benchmark.ts",
+    "system:drill": "tsx scripts/system-drill.ts",
+    "pretest": "node scripts/build-service.mjs",
+    "verify:system": "tsx scripts/verify-system.ts"
   },
   "dependencies": {
     "esbuild": "^0.28.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

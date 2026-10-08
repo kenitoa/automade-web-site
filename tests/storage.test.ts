@@ -15,7 +15,7 @@ test("migration applies once and compatible updates create backups", () => {
     assert.equal(store.backups(p.id)[0]?.name, "원본");
     assert.equal(
       store.db.prepare("SELECT COUNT(*) AS n FROM migrations").get()?.n,
-      1,
+      15,
     );
     assert.throws(() => store.save(p), /최신/);
   } finally {

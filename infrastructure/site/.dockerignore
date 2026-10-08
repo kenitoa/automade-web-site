@@ -1,0 +1,9 @@
+**
+!dist/
+!dist/**
+!site-server.mjs
+!project.interface.json
+!.release.json
+!deployment.contract.json
+!deployment.signature.json
+!Dockerfile
